@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>The IT Dad - Hotspot Manager Login</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Core Palette */
+            --primary-color: #2A7ABF; /* Updated: Bright Blue */
+            --primary-color-darker: #1F5A99; /* Updated: Darker Bright Blue */
+            --secondary-color-static: #7f8c8d; 
+            --success-color: #2ecc71;
+            --danger-color: #e74c3c;
+            --dark-color-static: #2c3e50;
+            --light-color-static: #ecf0f1;
+            --font-family: 'Roboto', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --border-radius: 0.25rem;
+
+            /* Light Theme Defaults */
+            --theme-bg-main: var(--light-color-static);
+            --theme-bg-container: #ffffff;
+            --theme-text-primary: var(--dark-color-static);
+            --theme-text-secondary: var(--secondary-color-static);
+            --theme-text-label: #555;
+            --theme-text-on-primary-btn: var(--dark-color-static);
+            --theme-border-input: #bdc3c7;
+            --theme-box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.08);
+            --theme-alert-danger-bg: #f8d7da;
+            --theme-alert-danger-text: var(--dark-color-static);
+            --theme-alert-danger-border: #f5c2c7;
+            --theme-alert-success-bg: #d1e7dd;
+            --theme-alert-success-text: var(--dark-color-static);
+            --theme-alert-success-border: #badbcc;
+            --theme-footer-text-color: var(--secondary-color-static);
+        }
+
+        /* Dark Theme Overrides */
+        body.dark-mode {
+            --theme-bg-main: #2c3e50;
+            --theme-bg-container: #3b5166; 
+            --theme-text-primary: #ecf0f1;
+            --theme-text-secondary: #bdc3c7;
+            --theme-text-label: #bdc3c7;
+            --theme-text-on-primary-btn: #ffffff;
+            --theme-border-input: #526d82;
+            --theme-box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.25);
+            --theme-alert-danger-bg: #c0392b;
+            --theme-alert-danger-text: #ffffff;
+            --theme-alert-danger-border: #e74c3c;
+            --theme-alert-success-bg: #27ae60;
+            --theme-alert-success-text: #ffffff;
+            --theme-alert-success-border: #2ecc71;
+            --theme-footer-text-color: var(--theme-text-secondary);
+        }
+
+        body {
+            font-family: var(--font-family);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: var(--theme-bg-main);
+            color: var(--theme-text-primary);
+            margin: 0;
+            padding: 1rem;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        .login-container {
+            background: var(--theme-bg-container);
+            padding: 2.5rem;
+            border-radius: var(--border-radius);
+            box-shadow: var(--theme-box-shadow);
+            width: 100%;
+            max-width: 450px;
+            text-align: center;
+            transition: background-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .login-container h2 {
+            /* color: var(--primary-color); */ /* Color will be from logo image */
+            margin-bottom: 0.5rem;
+            font-size: 2rem;
+            font-weight: 700;
+        }
+        .login-container .logo-image {
+            max-width: 200px; /* Updated size */
+            height: auto;
+            margin-bottom: 0.25rem; /* Space between logo and subtitle */
+        }
+        .login-container .subtitle {
+            color: var(--theme-text-secondary);
+            font-size: 0.95em;
+            margin-bottom: 2rem;
+        }
+        .form-group {
+            margin-bottom: 1.5rem;
+            text-align: left;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: var(--theme-text-label);
+            transition: color 0.3s ease;
+        }
+        .form-group input[type="text"],
+        .form-group input[type="number"],
+        .form-group input[type="password"] {
+            width: 100%;
+            padding: 0.85rem 1rem;
+            border: 1px solid var(--theme-border-input);
+            border-radius: var(--border-radius);
+            box-sizing: border-box; 
+            font-size: 1rem;
+            background-color: var(--theme-bg-main); /* Match body or a slightly lighter input bg */
+            color: var(--theme-text-primary);
+            transition: border-color 0.2s, box-shadow 0.2s, background-color 0.3s ease, color 0.3s ease;
+        }
+        body.dark-mode .form-group input[type="text"],
+        body.dark-mode .form-group input[type="number"],
+        body.dark-mode .form-group input[type="password"] {
+            background-color: var(--theme-bg-container); /* Inputs slightly lighter than body in dark mode */
+        }
+
+        .form-group input::placeholder {
+             color: var(--theme-text-secondary);
+             opacity: 0.7;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 0.2rem rgba(42, 122, 191, .25); /* Updated focus shadow for Bright Blue */
+        }
+        .login-button {
+            width: 100%;
+            padding: 0.85rem 1rem;
+            background-color: var(--primary-color);
+            color: var(--theme-text-on-primary-btn);
+            border: 1px solid var(--primary-color-darker);
+            border-radius: var(--border-radius);
+            font-size: 1.1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s, color 0.2s, box-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .login-button:hover {
+            background-color: var(--primary-color-darker);
+            color: #fff; /* White text on darker hover for visual feedback */
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+        body.dark-mode .login-button:hover {
+             box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .login-button:active {
+            transform: scale(0.98);
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+            background-color: var(--primary-color-darker); 
+        }
+        body.dark-mode .login-button:active {
+            color: #fff; /* Ensure text stays white on active in dark mode */
+        }
+        body:not(.dark-mode) .login-button:active {
+             color: var(--dark-color-static);
+        }
+        .login-button:focus {
+            outline: 2px solid var(--primary-color-darker);
+            outline-offset: 2px;
+            box-shadow: 0 0 0 0.2rem rgba(42, 122, 191, .25); /* Updated focus shadow for Bright Blue */
+        }
+        .login-button .fas { 
+            font-size: 1rem;
+        }
+        .alert { 
+            padding: 0.85rem 1rem;
+            margin-top: 1.5rem;
+            border-radius: var(--border-radius);
+            text-align: center;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+        }
+        .alert-danger {
+            color: var(--theme-alert-danger-text); 
+            background-color: var(--theme-alert-danger-bg); 
+            border: 1px solid var(--theme-alert-danger-border); 
+        }
+        .alert-success {
+            color: var(--theme-alert-success-text);
+            background-color: var(--theme-alert-success-bg);
+            border: 1px solid var(--theme-alert-success-border);
+        }
+        .loading-spinner { 
+            display: inline-block; width: 1em; height: 1em; vertical-align: -0.125em;
+            border: .2em solid currentColor; border-right-color: transparent;
+            border-radius: 50%; animation: spinner-border .75s linear infinite;
+        }
+        @keyframes spinner-border { to { transform: rotate(360deg); } }
+
+        .login-footer {
+            margin-top: 2rem;
+            text-align: center;
+            font-size: 0.9em;
+            color: var(--theme-footer-text-color);
+            transition: color 0.3s ease;
+        }
+        .login-footer p {
+            margin-bottom: 5px;
+        }
+        .login-footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        .login-footer a:hover {
+            text-decoration: underline;
+        }
+        .login-footer .fas {
+            margin-right: 5px;
+            color: var(--primary-color);
+        }
+
+        @media (max-width: 400px) {
+            .login-container {
+                padding: 1.5rem; /* Reduce padding for very small screens */
+            }
+            .login-container h2 {
+                font-size: 1.7rem;
+            }
+            .login-container .subtitle {
+                font-size: 0.9em;
+                margin-bottom: 1.5rem;
+            }
+            .form-group input[type="text"],
+            .form-group input[type="number"],
+            .form-group input[type="password"],
+            .login-button {
+                padding: 0.75rem 0.9rem; /* Slightly reduce padding */
+                font-size: 0.95rem;
+            }
+            .login-footer {
+                font-size: 0.8em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <!-- Web App Login Form -->
+        <div id="appLoginSection">
+            <h2><img src="{{ url_for('static', filename='images/The IT Dad new logo.png') }}" alt="The IT Dad Logo" class="logo-image"></h2>
+            <p class="subtitle">Hotspot Manager Login</p>
+            <form id="appLoginForm" method="POST" action="{{ url_for('app_login_route') }}">
+                <div class="form-group">
+                    <label for="appUsername">Admin Username</label>
+                    <input type="text" id="appUsername" name="app_username" placeholder="Enter admin username" required>
+                </div>
+                <div class="form-group">
+                    <label for="appPassword">Admin Password</label>
+                    <input type="password" id="appPassword" name="app_password" placeholder="Enter admin password" required>
+                </div>
+                <button type="submit" class="login-button">
+                    <i class="fas fa-sign-in-alt"></i> Login to App
+                </button>
+                <div id="appErrorMessage" class="alert" style="display: none;"></div>
+            </form>
+        </div>
+
+        <!-- Mikrotik Connection Form (Initially Hidden) -->
+        <div id="mikrotikLoginSection" style="display: none;">
+            <h2><img src="{{ url_for('static', filename='images/The IT Dad new logo.png') }}" alt="The IT Dad Logo" class="logo-image"></h2>
+            <p class="subtitle">Connect to Mikrotik Router</p>
+            <form id="mikrotikLoginForm"> 
+                <div class="form-group">
+                    <label for="routerHost">Router IP Address</label>
+                <input type="text" id="routerHost" placeholder="e.g., 192.168.88.1" required value="192.168.88.1">
+            </div>
+            <div class="form-group">
+                <label for="routerPort">API Port</label>
+                <input type="number" id="routerPort" placeholder="e.g., 8728" required value="8728">
+            </div>
+            <div class="form-group">
+                <label for="routerUsername">Username</label>
+                <input type="text" id="routerUsername" placeholder="e.g., admin" required value="admin">
+            </div>
+            <div class="form-group">
+                <label for="routerPassword">Password</label>
+                <input type="password" id="routerPassword" placeholder="Enter password" required>
+            </div>
+            <button type="submit" class="login-button">
+                <i class="fas fa-plug"></i> Connect to Router
+            </button>
+            <div id="mikrotikErrorMessage" class="alert" style="display: none;"></div> 
+            </form>
+        </div>
+    </div>
+    <footer class="login-footer">
+        <p><i class="fas fa-user-shield"></i><strong>The IT Dad</strong></p>
+        <p><i class="fas fa-phone-alt"></i>+(211) 923 616 820</p>
+        <p><i class="fas fa-envelope"></i><a href="mailto:justinkulang@gmail.com">justinkulang@gmail.com</a></p>
+    </footer>
+
+    <script>
+        // Translations object (populated by /api/translations)
+        let i18n = {};
+
+        // Function to get translated string
+        function _(key, ...args) {
+            let translation = i18n[key] || key;
+            if (args.length > 0) {
+                args.forEach((arg, index) => {
+                    translation = translation.replace(new RegExp(`\\{${index}\\}`, 'g'), arg);
+                });
+            }
+            return translation;
+        }
+
+        // Fetch translations first
+        async function fetchTranslations() {
+            try {
+                const response = await fetch('/api/translations'); // This is a GET, no CSRF needed
+                if (!response.ok) {
+                    console.error('Failed to load translations:', response.status);
+                    return;
+                }
+                i18n = await response.json();
+            } catch (error) {
+                console.error('Error fetching translations:', error);
+            }
+        }
+
+        // Function to get CSRF token from meta tag
+        function getCsrfToken() {
+            return document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        }
+
+        // App Login Form Handler
+        document.getElementById('appLoginForm').addEventListener('submit', function(event) {
+            event.preventDefault(); 
+            const csrfToken = getCsrfToken(); 
+            const username = document.getElementById('appUsername').value;
+            const password = document.getElementById('appPassword').value;
+            const appErrorMessageDiv = document.getElementById('appErrorMessage');
+            const appLoginButton = this.querySelector('button[type="submit"]');
+            const originalButtonHTML = appLoginButton.innerHTML;
+
+            appErrorMessageDiv.textContent = '';
+            appErrorMessageDiv.style.display = 'none';
+            appErrorMessageDiv.className = 'alert';
+
+            if (!username || !password) {
+                appErrorMessageDiv.textContent = _('Username and password are required.'); 
+                appErrorMessageDiv.className = 'alert alert-danger';
+                appErrorMessageDiv.style.display = 'block';
+                return;
+            }
+
+            appLoginButton.disabled = true;
+            appLoginButton.innerHTML = `<span class="loading-spinner"></span> ${_('Connecting...')}`;
+            
+            const formData = new FormData();
+            formData.append('app_username', username);
+            formData.append('app_password', password);
+
+            fetch('/app-login', { 
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken 
+                },
+                body: new URLSearchParams(formData) 
+            })
+            .then(response => response.json().then(data => ({ ok: response.ok, status: response.status, data })))
+            .then(({ ok, status, data }) => {
+                if (ok && data.success) {
+                    appErrorMessageDiv.textContent = data.message || _('Successfully connected! Redirecting...');
+                    appErrorMessageDiv.className = 'alert alert-success';
+                    appErrorMessageDiv.style.display = 'block';
+                    document.getElementById('appLoginSection').style.display = 'none';
+                    document.getElementById('mikrotikLoginSection').style.display = 'block';
+                } else {
+                    appErrorMessageDiv.textContent = data.message || _('Connection failed (Error {0}). Please check details and try again.', status);
+                    appErrorMessageDiv.className = 'alert alert-danger';
+                    appErrorMessageDiv.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error during app login fetch:', error);
+                appErrorMessageDiv.textContent = _('Network error or server is unreachable.');
+                appErrorMessageDiv.className = 'alert alert-danger';
+                appErrorMessageDiv.style.display = 'block';
+            })
+            .finally(() => {
+                if (!appErrorMessageDiv.classList.contains('alert-success')) {
+                     appLoginButton.disabled = false;
+                     appLoginButton.innerHTML = originalButtonHTML;
+                }
+            });
+        });
+
+        // Mikrotik Login Form Handler
+        document.getElementById('mikrotikLoginForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const csrfToken = getCsrfToken(); 
+
+            const host = document.getElementById('routerHost').value;
+            const port = document.getElementById('routerPort').value;
+            const username = document.getElementById('routerUsername').value;
+            const password = document.getElementById('routerPassword').value;
+            const mikrotikErrorMessageDiv = document.getElementById('mikrotikErrorMessage'); 
+            const connectButton = this.querySelector('button[type="submit"]');
+            const originalButtonHTML = connectButton.innerHTML;
+
+            mikrotikErrorMessageDiv.textContent = '';
+            mikrotikErrorMessageDiv.style.display = 'none';
+            mikrotikErrorMessageDiv.className = 'alert';
+
+            if (!host || !port || !username) {
+                mikrotikErrorMessageDiv.textContent = _('Router IP, Port, and Username are required.');
+                mikrotikErrorMessageDiv.className = 'alert alert-danger';
+                mikrotikErrorMessageDiv.style.display = 'block';
+                return;
+            }
+            if (parseInt(port) <= 0 || parseInt(port) > 65535) {
+                 mikrotikErrorMessageDiv.textContent = _('Please enter a valid port number (1-65535).');
+                 mikrotikErrorMessageDiv.className = 'alert alert-danger';
+                 mikrotikErrorMessageDiv.style.display = 'block';
+                return;
+            }
+
+            connectButton.disabled = true;
+            connectButton.innerHTML = `<span class="loading-spinner"></span> ${_('Connecting...')}`;
+
+            fetch('/api/initial-connect', { 
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken 
+                },
+                body: JSON.stringify({ host, port: parseInt(port), username, password }),
+            })
+            .then(response => response.json().then(data => ({ ok: response.ok, status: response.status, data })))
+            .then(({ ok, status, data }) => {
+                if (ok && data.success) {
+                    mikrotikErrorMessageDiv.textContent = data.message || _('Successfully connected! Redirecting...');
+                    mikrotikErrorMessageDiv.className = 'alert alert-success';
+                    mikrotikErrorMessageDiv.style.display = 'block';
+                    window.location.href = '/dashboard';
+                } else {
+                    mikrotikErrorMessageDiv.textContent = data.message || _('Connection failed (Error {0}). Please check details and try again.', status);
+                    mikrotikErrorMessageDiv.className = 'alert alert-danger';
+                    mikrotikErrorMessageDiv.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error during Mikrotik connect fetch:', error);
+                mikrotikErrorMessageDiv.textContent = _('Network error or server is unreachable.');
+                mikrotikErrorMessageDiv.className = 'alert alert-danger';
+                mikrotikErrorMessageDiv.style.display = 'block';
+            })
+            .finally(() => {
+                if (!mikrotikErrorMessageDiv.classList.contains('alert-success')) {
+                    connectButton.disabled = false;
+                    connectButton.innerHTML = originalButtonHTML;
+                }
+            });
+        });
+
+        // Theme Loading Logic for login.html
+        function applyLoginTheme(theme) {
+            if (theme === 'dark') {
+                document.body.classList.add('dark-mode');
+            } else {
+                document.body.classList.remove('dark-mode');
+            }
+            // No toggle UI on login page to update
+        }
+
+        const savedLoginTheme = localStorage.getItem('theme');
+        const prefersDarkLogin = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+        if (savedLoginTheme) {
+            applyLoginTheme(savedLoginTheme);
+        } else if (prefersDarkLogin) {
+            applyLoginTheme('dark');
+        } else {
+            applyLoginTheme('light'); // Default to light
+        }
+        // End Theme Loading Logic
+
+        document.addEventListener('DOMContentLoaded', fetchTranslations); // Keep this, ensure theme logic runs before/with it or is independent
+    </script>
+</body>
+</html>

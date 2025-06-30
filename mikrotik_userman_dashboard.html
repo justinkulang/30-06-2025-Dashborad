@@ -1,0 +1,2503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>Hotspot Manager v2</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+        :root {
+            /* Core Palette (mostly unchanged by theme switching) */
+            --primary-color: #2A7ABF; /* Updated: Bright Blue */
+            --primary-color-darker: #1F5A99; /* Updated: Darker Bright Blue */
+            --primary-color-lightest: #d5e5f5; /* Updated: Lighter shade for Bright Blue focus */
+            --secondary-color-static: #7f8c8d; 
+            --success-color: #2ecc71;
+            --danger-color: #e74c3c;
+            --warning-color: #f39c12;
+            --info-color: #3498db;
+            --dark-color-static: #2c3e50; 
+            --light-color-static: #ecf0f1;
+
+            --font-family: 'Roboto', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --border-radius: 0.25rem;
+
+            /* Light Theme Defaults (Initial Definition) */
+            --theme-bg-main: var(--light-color-static);
+            --theme-bg-sidebar: #ffffff;
+            --theme-bg-panel: #ffffff;
+            --theme-bg-table-header: #f9fafb;
+            --theme-bg-table-row-hover: #f0f8ff;
+            --theme-bg-input: #ffffff;
+            --theme-text-primary: var(--dark-color-static);
+            --theme-text-secondary: var(--secondary-color-static);
+            --theme-text-nav-link: #495057;
+            --theme-text-nav-link-active: #ffffff;
+            --theme-text-on-primary-btn: var(--dark-color-static);
+            --theme-text-on-colored-bg: #ffffff;
+            --theme-border-light: #dee2e6; 
+            --theme-border-panel: #bdc3c7; 
+            --theme-border-table: #ecf0f1; 
+            --theme-box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.08);
+            --theme-stat-card-icon-color: var(--primary-color);
+            --theme-modal-header-border: #dee2e6;
+            --theme-modal-footer-border: #dee2e6;
+            --theme-alert-success-bg: #d1e7dd;
+            --theme-alert-success-text: var(--dark-color-static); 
+            --theme-alert-success-border: #badbcc;
+            --theme-alert-danger-bg: #f8d7da;
+            --theme-alert-danger-text: var(--dark-color-static); 
+            --theme-alert-danger-border: #f5c2c7;
+            --theme-empty-state-icon-color: var(--primary-color);
+            --theme-empty-state-icon-opacity: 0.5;
+            --theme-empty-state-td-bg: #fff; /* Table cell background for empty state in light mode */
+            --theme-empty-state-row-hover-bg: #fff; /* Prevent hover on empty state row in light mode */
+            --theme-sidebar-footer-text-color: var(--secondary-color-static);
+            --theme-sidebar-footer-strong-text-color: var(--dark-color-static);
+            --theme-sidebar-footer-border-color: var(--theme-border-light);
+            --theme-chart-empty-state-bg: rgba(255,255,255,0.9); /* Light overlay for empty chart in light mode */
+        }
+
+        /* Dark Theme Overrides */
+        body.dark-mode {
+            --theme-bg-main: #2c3e50;
+            --theme-bg-sidebar: #34495e;
+            --theme-bg-panel: #3b5166;
+            --theme-bg-table-header: #415a72;
+            --theme-bg-table-row-hover: #4a657f;
+            --theme-bg-input: #415a72;
+            --theme-text-primary: #ecf0f1;
+            --theme-text-secondary: #bdc3c7;
+            --theme-text-nav-link: #e0e0e0;
+            --theme-text-on-primary-btn: #ffffff; 
+            --theme-border-light: #4a657f;
+            --theme-border-panel: #526d82;
+            --theme-border-table: #4a657f;
+            --theme-box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.25);
+            --theme-modal-header-border: var(--theme-border-light);
+            --theme-modal-footer-border: var(--theme-border-light);
+            --theme-alert-success-bg: #27ae60; 
+            --theme-alert-success-text: #ffffff;
+            --theme-alert-success-border: #2ecc71;
+            --theme-alert-danger-bg: #c0392b; 
+            --theme-alert-danger-text: #ffffff;
+            --theme-alert-danger-border: #e74c3c;
+            --theme-empty-state-icon-color: var(--primary-color-lightest);
+            --theme-empty-state-icon-opacity: 0.7;
+            --theme-empty-state-td-bg: var(--theme-bg-panel); /* Match panel bg for empty state in dark mode */
+            --theme-empty-state-row-hover-bg: var(--theme-bg-panel); /* Prevent hover on empty state row in dark mode */
+            --theme-sidebar-footer-text-color: var(--theme-text-secondary);
+            --theme-sidebar-footer-strong-text-color: var(--theme-text-primary);
+            --theme-sidebar-footer-border-color: var(--theme-border-light);
+            --theme-chart-empty-state-bg: rgba(44, 62, 80, 0.9); /* Darker overlay for empty chart in dark mode */
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--font-family);
+            background-color: var(--theme-bg-main); 
+            color: var(--theme-text-primary);
+            display: flex;
+            height: 100vh;
+            transition: background-color 0.3s ease, color 0.3s ease; 
+        }
+        .sidebar {
+            width: 260px;
+            background-color: var(--theme-bg-sidebar); 
+            box-shadow: var(--theme-box-shadow); 
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem 1rem; 
+            transition: width 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+            border-right: 1px solid var(--theme-border-panel); 
+        }
+        .sidebar-header {
+            text-align: center;
+            padding-bottom: 1rem; /* Reduced padding */
+            border-bottom: 1px solid var(--theme-border-light);
+            margin-bottom: 1rem;
+            transition: border-color 0.3s ease;
+        }
+        .sidebar-header .logo-image {
+            max-width: 140px; /* Updated size */
+            height: auto;
+            /* margin-bottom: 0.5rem; */ /* Optional: if subtitle was below logo */
+        }
+        /* Hiding the h2 if a logo is used, or repurpose if needed */
+        /* .sidebar-header h2 { display: none; } */
+
+        .sidebar-nav { flex-grow: 1; list-style: none; margin-top: 0; } 
+        .sidebar-nav a {
+            display: flex;
+            align-items: center;
+            padding: 0.8rem 1rem;
+            color: var(--theme-text-nav-link);
+            text-decoration: none;
+            border-radius: var(--border-radius);
+            margin-bottom: 0.5rem;
+            transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+        .sidebar-nav a:hover { 
+            background-color: var(--primary-color);
+            color: var(--theme-text-nav-link-active);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1); 
+        }
+        body.dark-mode .sidebar-nav a:hover {
+             box-shadow: 0 2px 5px rgba(0,0,0,0.2); 
+        }
+        .sidebar-nav a.active { 
+            background-color: var(--primary-color-darker); 
+            color: var(--theme-text-nav-link-active);
+            font-weight: 500; 
+        }
+        .sidebar-nav a i { width: 30px; text-align: center; font-size: 1.1rem; margin-right: 5px; } 
+        .sidebar-footer {
+            text-align: center; 
+            padding: 20px 10px; 
+            font-size: 0.9em; 
+            color: var(--theme-sidebar-footer-text-color); 
+            border-top: 1px solid var(--theme-sidebar-footer-border-color); 
+            margin-top: auto;
+            transition: color 0.3s ease, border-color 0.3s ease;
+        }
+        .sidebar-footer p strong {
+            color: var(--theme-sidebar-footer-strong-text-color);
+            transition: color 0.3s ease;
+        }
+        .sidebar-footer a { /* Ensure link color in footer adapts */
+            color: var(--primary-color);
+        }
+
+        /* Theme Toggle Switch */
+        .theme-switch-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center; 
+            margin-top: 1rem; 
+            padding-top: 1rem; 
+            border-top: 1px solid var(--theme-sidebar-footer-border-color);
+            transition: border-color 0.3s ease;
+        }
+        .theme-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px; 
+            height: 26px; 
+        }
+        .theme-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc; 
+            transition: .4s;
+            border-radius: 26px; 
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 20px; 
+            width: 20px;
+            left: 3px; 
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%; 
+        }
+        input:checked + .slider {
+            background-color: var(--primary-color); 
+        }
+        input:focus-visible + .slider { 
+            box-shadow: 0 0 0 2px var(--theme-bg-sidebar), 0 0 0 4px var(--primary-color-lightest);
+        }
+        input:checked + .slider:before {
+            transform: translateX(24px); 
+        }
+        .theme-switch-wrapper span { /* For the "Dark Mode" label text */
+             color: var(--theme-text-secondary);
+             transition: color 0.3s ease;
+        }
+
+
+        .main-content {
+            flex-grow: 1;
+            padding: 2rem;
+            overflow-y: auto;
+            background-color: var(--theme-bg-main); 
+            transition: background-color 0.3s ease;
+        }
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--theme-border-panel); 
+            transition: border-color 0.3s ease;
+        }
+        .page-header h1 { font-size: 1.8rem; color: var(--theme-text-primary); font-weight: 600; } 
+        .page-header span { color: var(--theme-text-secondary); }
+
+        #connectionStatus { padding: 0.5rem 1rem; border-radius: var(--border-radius); font-weight: 500; transition: background-color 0.3s ease, color 0.3s ease; }
+        #connectionStatus.connected { background-color: var(--success-color); color: var(--theme-text-on-colored-bg); } 
+        #connectionStatus.disconnected { background-color: var(--danger-color); color: var(--theme-text-on-colored-bg); } 
+        
+        .tab-content { display: none; }
+        .tab-content.active { display: block; animation: fadeIn 0.3s ease-in-out; } 
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; } 
+        .stat-card { 
+            background: var(--theme-bg-panel); padding: 1.5rem; border-radius: var(--border-radius); 
+            box-shadow: var(--theme-box-shadow); display: flex; align-items: center; 
+            border-left: 4px solid var(--primary-color); 
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out, background-color 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 0.4rem 1rem rgba(0, 0, 0, 0.12); 
+        }
+        body.dark-mode .stat-card:hover {
+            box-shadow: 0 0.4rem 1rem rgba(0, 0, 0, 0.3); 
+        }
+        .stat-card-icon { font-size: 2.2rem; margin-right: 1rem; color: var(--theme-stat-card-icon-color); } 
+        .stat-card-info h3 { font-size: 1.75rem; font-weight: 600; color: var(--theme-text-primary); } 
+        .stat-card-info p { color: var(--theme-text-secondary); font-size: 0.9rem; }
+        
+        .panel { 
+            background: var(--theme-bg-panel); padding: 1.5rem; 
+            border-radius: var(--border-radius); box-shadow: var(--theme-box-shadow); 
+            margin-bottom: 2rem; 
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out, background-color 0.3s ease;
+        }
+        .panel:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 0.4rem 1rem rgba(0, 0, 0, 0.12); 
+        }
+        body.dark-mode .panel:hover {
+            box-shadow: 0 0.4rem 1rem rgba(0, 0, 0, 0.3); 
+        }
+        .panel-header { 
+            margin-bottom: 1.5rem; padding-bottom: 1rem; 
+            border-bottom: 1px solid var(--theme-border-light); 
+            font-size: 1.25rem; font-weight: 600; color: var(--theme-text-primary);
+            transition: border-color 0.3s ease;
+        }
+        .panel-header i { color: var(--primary-color) !important; /* Ensure panel header icons use brand color */ }
+        
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; }
+        .form-group { margin-bottom: 1.25rem; } 
+        .form-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--theme-text-secondary); } 
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%; padding: 0.75rem 1rem; 
+            border: 1px solid var(--theme-border-panel); 
+            border-radius: var(--border-radius); font-size: 0.95rem; 
+            transition: border-color 0.2s, box-shadow 0.2s, background-color 0.3s ease, color 0.3s ease;
+            background-color: var(--theme-bg-input); 
+            color: var(--theme-text-primary);
+        }
+        .form-group select {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%232c3e50' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e"); /* Dark arrow for light mode */
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 0.8em 0.8em;
+            padding-right: 2.5rem; /* Ensure space for arrow */
+        }
+        .form-group input::placeholder, .form-group textarea::placeholder { 
+            color: var(--theme-text-secondary);
+            opacity: 0.8;
+        }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { 
+            outline: none; border-color: var(--primary-color); 
+            box-shadow: 0 0 0 0.2rem rgba(42, 122, 191, .25); /* Updated focus shadow for Bright Blue */
+        }
+        body.dark-mode .form-group select {
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23bdc3c7' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e"); /* Light arrow for dark mode */
+            /* background-repeat, position, size are inherited or can be re-specified if different */
+        }
+
+        .btn {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.75rem 1.5rem; font-size: 0.95rem; font-weight: 500; 
+            border: 1px solid transparent; border-radius: var(--border-radius);
+            cursor: pointer; text-decoration: none; 
+            transition: all 0.2s ease-in-out, background-color 0.2s ease-in-out, color 0.2s ease-in-out, border-color 0.2s ease-in-out;
+            box-shadow: var(--theme-box-shadow); 
+        }
+        .btn:hover { 
+            transform: translateY(-1px); 
+            box-shadow: 0 0.3rem 0.8rem rgba(0,0,0,0.15); 
+        }
+        body.dark-mode .btn:hover {
+            box-shadow: 0 0.3rem 0.8rem rgba(0,0,0,0.35);
+        }
+        
+        .btn:active {
+            transform: scale(0.98) translateY(0px); 
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.15); 
+        }
+        body.dark-mode .btn:active {
+             box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+        }
+
+        .btn:focus-visible { 
+            outline: 2px solid var(--primary-color-darker);
+            outline-offset: 2px;
+            box-shadow: 0 0 0 0.2rem rgba(42, 122, 191, .25); /* Updated focus shadow for Bright Blue */
+        }
+
+        .btn-primary { background-color: var(--primary-color); color: var(--theme-text-on-primary-btn); border-color: var(--primary-color-darker); } 
+        .btn-primary:hover { background-color: var(--primary-color-darker); color: #fff; border-color: var(--primary-color-darker); }
+        body.dark-mode .btn-primary:active { background-color: var(--primary-color); color: #fff;}
+        body:not(.dark-mode) .btn-primary:active { background-color: var(--primary-color); color: var(--dark-color-static);}
+        
+        .btn-danger { background-color: var(--danger-color); color: var(--theme-text-on-colored-bg); border-color: var(--danger-color); }
+        .btn-danger:hover { background-color: #c0392b; border-color: #c0392b; color: #fff; } 
+        
+        .btn-success { background-color: var(--success-color); color: var(--theme-text-on-colored-bg); border-color: var(--success-color); }
+        .btn-success:hover { background-color: #27ae60; border-color: #27ae60; color: #fff; } 
+        
+        .btn-info { background-color: var(--info-color); color: #fff; border-color: var(--info-color); }
+        .btn-info:hover { background-color: #2980b9; border-color: #2980b9; color: #fff; }
+
+        .btn-danger, .btn-success, #connectionStatus.connected, #connectionStatus.disconnected, .status-badge {
+             font-weight: 500; 
+        }
+        .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.875rem; } 
+        
+        .table-container { 
+            overflow-x: auto; 
+            border: 1px solid var(--theme-border-panel); 
+            border-radius: var(--border-radius); 
+            background-color: var(--theme-bg-panel); 
+            transition: background-color 0.3s ease, border-color 0.3s ease;
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; } 
+        th, td { padding: 0.9rem 1rem; text-align: left; border-bottom: 1px solid var(--theme-border-table); vertical-align: middle; } 
+        th { background-color: var(--theme-bg-table-header); font-weight: 600; color: var(--theme-text-primary); transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease; } 
+        tbody tr { transition: background-color 0.15s ease; }
+        tbody tr:hover { background-color: var(--theme-bg-table-row-hover); } 
+        
+        .status-badge { padding: 0.3em 0.6em; font-size: 80%; line-height: 1; text-align: center; white-space: nowrap; vertical-align: baseline; border-radius: var(--border-radius); }
+        .status-active { color: var(--theme-text-on-colored-bg); background-color: var(--success-color); } 
+        .status-disabled { color: var(--theme-text-primary); background-color: var(--secondary-color-static); } 
+        body.dark-mode .status-disabled { color: var(--theme-text-primary); background-color: #566573; } 
+
+        .modal {
+            display: none; position: fixed; z-index: 1050; top: 0; left: 0; width: 100%; height: 100%;
+            overflow: hidden; background-color: rgba(0,0,0,0.6); 
+        }
+        body.dark-mode .modal {
+            background-color: rgba(0,0,0,0.75); 
+        }
+        .modal-dialog { position: relative; width: auto; max-width: 600px; margin: 1.75rem auto; }
+        .modal-content { 
+            background-color: var(--theme-bg-panel); 
+            border-radius: var(--border-radius); 
+            box-shadow: var(--theme-box-shadow); 
+            border: 1px solid var(--theme-border-panel);
+            transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid var(--theme-modal-header-border); transition: border-color 0.3s ease; } 
+        .modal-header .modal-title { color: var(--theme-text-primary); }
+        .modal-body { padding: 1.5rem; color: var(--theme-text-primary); }
+        .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.5rem; border-top: 1px solid var(--theme-modal-footer-border); transition: border-color 0.3s ease; } 
+        .close-button { 
+            background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--theme-text-secondary);
+            transition: color 0.2s ease-in-out;
+        }
+        .close-button:hover, .close-button:focus { color: var(--theme-text-primary); }
+        
+        .loading-spinner {
+            display: inline-block; width: 1rem; height: 1rem; vertical-align: text-bottom;
+            border: .2em solid currentColor; border-right-color: transparent;
+            border-radius: 50%; animation: spinner-border .75s linear infinite;
+        }
+        @keyframes spinner-border { to { transform: rotate(360deg); } }
+        
+        .alert { 
+            padding: 1rem; margin-bottom: 1rem; 
+            border: 1px solid transparent; border-radius: var(--border-radius); 
+            display: none; font-weight: 500;
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+        }
+        .alert-success { 
+            color: var(--theme-alert-success-text); background-color: var(--theme-alert-success-bg); border-color: var(--theme-alert-success-border); 
+        }
+        .alert-danger { 
+            color: var(--theme-alert-danger-text); background-color: var(--theme-alert-danger-bg); border-color: var(--theme-alert-danger-border);
+        }
+        
+        .sidebar-nav a.active {
+            background-color: var(--primary-color-darker);
+            color: var(--theme-text-nav-link-active); 
+            font-weight: 500; 
+        }
+        .sidebar-nav a:focus-visible { 
+            outline: 2px solid var(--primary-color-darker);
+            outline-offset: -2px; 
+            background-color: var(--primary-color-lightest, #e8f8f5); 
+            color: var(--primary-color-darker);
+        }
+        body.dark-mode .sidebar-nav a:focus-visible {
+            background-color: var(--primary-color); 
+            color: #fff;
+        }
+
+        /* Empty State Styles */
+        .empty-state-container {
+            text-align: center;
+            padding: 3rem 1rem; 
+            color: var(--theme-text-secondary);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 100%; 
+            min-height: 200px; 
+        }
+        .empty-state-icon {
+            font-size: 3.5rem; 
+            color: var(--theme-empty-state-icon-color); 
+            opacity: var(--theme-empty-state-icon-opacity); 
+            margin-bottom: 1.5rem;
+        }
+        .empty-state-title {
+            font-size: 1.25rem; 
+            color: var(--theme-text-primary);
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+        }
+        .empty-state-text {
+            font-size: 0.9rem; 
+            line-height: 1.5;
+            max-width: 400px; 
+            margin-bottom: 1.5rem;
+        }
+        td.empty-state-td { 
+            border-bottom: none !important; 
+            background-color: var(--theme-empty-state-td-bg) !important;
+            transition: background-color 0.3s ease !important;
+        }
+        tr.empty-state-row:hover td.empty-state-td { 
+            background-color: var(--theme-empty-state-row-hover-bg) !important;
+        }
+        
+        .chart-container div.empty-state-container { 
+             background-color: var(--theme-chart-empty-state-bg) !important;
+             min-height: 300px; 
+             transition: background-color 0.3s ease;
+        }
+
+        .analytics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-top: 1.5rem;
+        }
+        .chart-container {
+            position: relative;
+            height: 350px;
+            width: 100%;
+        }
+
+        @media (max-width: 992px) {
+            .analytics-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        @media (max-width: 768px) {
+            body { flex-direction: column; }
+            .sidebar { width: 100%; height: auto; flex-direction: row; align-items: center; overflow-x: auto; }
+            .sidebar-nav { display: flex; flex-direction: row; }
+            .sidebar-header { display: none; } /* Keep IT Dad name hidden on small nav */
+            .sidebar-footer {
+                flex-direction: column; /* Stack footer items vertically for clarity in narrow bar */
+                align-items: center; /* Center them */
+                padding: 0.5rem;
+                gap: 0.5rem;
+            }
+            .sidebar-footer .theme-switch-wrapper { /* Ensure theme switch is also centered and spaced */
+                margin-top: 0.5rem;
+                padding-top: 0.5rem;
+                width: 100%; /* Allow it to take width for centering its content */
+                justify-content: center;
+            }
+            .sidebar-footer p { font-size: 0.8em; margin-bottom: 0.25rem; }
+            .sidebar-footer p strong { font-size: 0.9em; }
+
+
+            .main-content { padding: 1rem; }
+            .page-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; /* Reduced gap */ }
+            .page-header h1 { font-size: 1.5rem; } /* Smaller page titles */
+            .page-header span { font-size: 0.8em; }
+
+            .panel, .stat-card { padding: 1rem; }
+            .panel-header { font-size: 1.1rem; margin-bottom: 1rem; padding-bottom: 0.75rem;}
+            .stat-card-info h3 { font-size: 1.3rem; }
+            .stat-card-info p { font-size: 0.8rem; }
+            .stat-card-icon { font-size: 1.8rem; margin-right: 0.8rem;}
+
+            .dashboard-grid { gap: 1rem; }
+            .form-grid { gap: 1rem; }
+            .form-group input, .form-group select, .form-group textarea { padding: 0.6rem 0.8rem; font-size: 0.9rem; }
+            .btn { padding: 0.6rem 1rem; font-size: 0.9rem; }
+            .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+
+            /* Table refinements */
+            .table-container { font-size: 0.85rem; /* Reduce base font for table container slightly */ }
+            th, td { padding: 0.5rem 0.4rem; /* Significantly reduce padding */ font-size: 0.8rem; }
+            
+            /* Make form buttons and modal footer buttons full width and stacked */
+            #createUserForm button[type="submit"], 
+            #bulkCreateUserForm button[type="submit"],
+            #configForm button, /* Both test and save */
+            .modal-footer .btn {
+                width: 100%;
+                margin-bottom: 0.5rem;
+            }
+            .modal-footer .btn:last-child { margin-bottom: 0; }
+            .modal-footer { flex-direction: column; }
+            #configForm div[style*="gap"] { flex-direction: column; } /* Stack test/save in settings */
+
+            .modal-dialog { margin: 0.5rem auto; width: calc(100% - 1rem); }
+            .modal-header, .modal-body, .modal-footer { padding: 0.75rem; }
+            .modal-header .modal-title { font-size: 1.1rem; }
+
+            /* Specific column hiding for users table - example for 'Comment' */
+            /* This requires adding a class like 'hide-on-mobile' to th/td in JS or HTML */
+            /* For now, this is a placeholder to show how it would be done. */
+            /* .users-table-comment-col { display: none; } */
+
+            /* Analytics page adjustments */
+            .analytics-grid { margin-top: 1rem; gap: 1rem; }
+            #refreshAnalyticsButton { margin-left: 0 !important; width: 100%; margin-top: 1rem; }
+            .page-header > div:first-child { /* Ensure title and subtitle stack nicely */
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <img src="{{ url_for('static', filename='images/The IT Dad new logo.png') }}" alt="The IT Dad Logo" class="logo-image">
+        </div>
+        <ul class="sidebar-nav">
+            <li><a href="#" class="nav-link active" data-tab="dashboard"><i class="fas fa-tachometer-alt"></i><span>Dashboard</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="users"><i class="fas fa-users"></i><span>Users</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="create"><i class="fas fa-user-plus"></i><span>Create</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="sessions"><i class="fas fa-wifi"></i><span>Active Sessions</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="analytics"><i class="fas fa-chart-line"></i><span>Live Analytics</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="historical-analytics"><i class="fas fa-history"></i><span>Historical Analytics</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="maintenance"><i class="fas fa-tools"></i><span>Maintenance</span></a></li>
+            <li><a href="#" class="nav-link" data-tab="settings"><i class="fas fa-cog"></i><span>Settings</span></a></li>
+            <li><a href="#" id="logoutButton" class="nav-link"><i class="fas fa-sign-out-alt"></i><span>Logout</span></a></li>
+        </ul>
+        <div class="sidebar-footer">
+            <p><strong>The IT Dad</strong></p>
+            <p><i class="fas fa-phone-alt" style="margin-right: 5px; color: var(--primary-color);"></i>+(211) 923 616 820</p>
+            <p style="margin-bottom: 1rem;"><i class="fas fa-envelope" style="margin-right: 5px; color: var(--primary-color);"></i><a href="mailto:justinkulang@gmail.com" style="color: var(--primary-color); text-decoration: none;">justinkulang@gmail.com</a></p>
+            
+            <div class="theme-switch-wrapper">
+                <label class="theme-switch" for="themeToggleCheckbox" aria-label="Toggle dark mode">
+                    <input type="checkbox" id="themeToggleCheckbox" />
+                    <span class="slider round"></span>
+                </label>
+                <span style="margin-left: 0.75rem;" id="themeToggleLabel">Light Mode</span>
+            </div>
+        </div>
+    </aside>
+    <main class="main-content">
+        <div class="page-header">
+            <div>
+                <h1 id="pageTitle">Dashboard</h1>
+                <span>Mikrotik Hotspot Management</span>
+            </div>
+            <div id="connectionStatus" class="disconnected"><i class="fas fa-exclamation-triangle"></i><span>Connecting...</span></div>
+        </div>
+        <div id="globalAlert" class="alert" role="alert"></div>
+
+        <div id="dashboard" class="tab-content active" role="tabpanel" aria-labelledby="tab-dashboard">
+            <div class="dashboard-grid">
+                <div class="stat-card">
+                    <i class="fas fa-users stat-card-icon"></i>
+                    <div class="stat-card-info">
+                        <h3 id="totalUsers">-</h3>
+                        <p>Total Users</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <i class="fas fa-wifi stat-card-icon" style="color: var(--success-color);"></i>
+                    <div class="stat-card-info">
+                        <h3 id="activeSessions">-</h3>
+                        <p>Active Sessions</p>
+                    </div>
+                </div>
+            </div>
+            <div class="panel">
+                <p>Welcome to The IT Dad's Hotspot Management System. Use the menu on the left to navigate.</p>
+            </div>
+        </div>
+
+        <div id="users" class="tab-content" role="tabpanel" aria-labelledby="tab-users">
+            <div class="panel">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>User List</h3>
+                    <button class="btn btn-primary btn-sm" onclick="loadUsers()"><i class="fas fa-sync-alt"></i> Refresh</button>
+                </div>
+                <div class="form-grid" style="margin-bottom: 1.5rem;">
+                    <div class="form-group"><input type="text" id="userSearchInput" placeholder="Search Username/Comment..."></div>
+                    <div class="form-group">
+                        <select id="userFilterProfile">
+                            <option value="">Filter by Profile...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <select id="userFilterStatus">
+                            <option value="">Filter by Status...</option>
+                            <option value="active">Active</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table id="usersTable">
+                        <thead>
+                            <tr>
+                                <th>Username</th><th>Profile</th><th>Status</th><th>Time Limit</th>
+                                <th>Data Limit</th><th>Uptime</th><th>Data Used</th><th>Comment</th><th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class="empty-state-row"><td colspan="9" class="empty-state-td"><div class="empty-state-container" style="min-height: 200px;"><div class="loading-spinner" style="font-size: 1.8em; margin-bottom: 1.2rem; color: var(--primary-color);"></div><h5 class="empty-state-title" style="margin-bottom: 0.5rem;">Loading users...</h5><p class="empty-state-text">Please wait while we fetch the user data from the router.</p></div></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                 <div class="panel-header" style="margin-top: 2rem; display: flex; justify-content: space-between; align-items: center;">
+                    <h3>Export Users</h3>
+                </div>
+                 <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;">
+                    <div class="form-group" style="flex-grow: 1;">
+                         <label for="exportProfileFilter">Filter by Profile</label>
+                        <select id="exportProfileFilter"></select>
+                    </div>
+                    <button class="btn btn-success" onclick="triggerExport('csv')"><i class="fas fa-file-csv"></i> CSV</button>
+                    <button class="btn btn-primary" onclick="triggerExport('html_voucher')"><i class="fas fa-ticket-alt"></i> Vouchers (HTML)</button>
+                    <button class="btn btn-danger" onclick="triggerExport('pdf_voucher')"><i class="fas fa-file-pdf"></i> Vouchers (PDF)</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="create" class="tab-content" role="tabpanel" aria-labelledby="tab-create">
+            <div class="panel">
+                <h3 class="panel-header">Create Single User</h3>
+                <form id="createUserForm">
+                    <div class="form-grid">
+                        <div class="form-group"><label for="username">Username</label><input type="text" id="username" required></div>
+                        <div class="form-group"><label for="password">Password</label><input type="text" id="password" required></div>
+                        <div class="form-group"><label for="profile">Profile</label><select id="profile"></select></div>
+                        <div class="form-group"><label for="timeLimit">Time Limit</label><input type="text" id="timeLimit" placeholder="e.g., 1h30m, 30d"></div>
+                        <div class="form-group"><label for="dataLimit">Data Limit (MB)</label><input type="number" id="dataLimit" placeholder="e.g., 500"></div>
+                        <div class="form-group"><label for="comment">Comment</label><input type="text" id="comment"></div>
+                    </div>
+                    <button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Create User</button>
+                </form>
+            </div>
+            <div class="panel">
+                <h3 class="panel-header">Batch Voucher Generation</h3>
+                <form id="bulkCreateUserForm">
+                     <div class="form-grid">
+                        <div class="form-group"><label for="bulkNumberOfUsers">Number of Vouchers</label><input type="number" id="bulkNumberOfUsers" required></div>
+                        <div class="form-group"><label for="bulkProfile">Profile</label><select id="bulkProfile" required></select></div>
+                        <div class="form-group"><label for="bulkTimeLimit">Time Limit</label><input type="text" id="bulkTimeLimit" placeholder="e.g., 2h, 30d"></div>
+                        <div class="form-group"><label for="bulkDataLimit">Total Data Limit (MB)</label><input type="number" id="bulkDataLimit" placeholder="e.g., 1024"></div>
+                        <div class="form-group"><label for="bulkCommentPrefix">Batch Name / Comment Prefix</label><input type="text" id="bulkCommentPrefix" placeholder="e.g., Event2024"></div>
+                        <div class="form-group"><label for="bulkUsernamePrefix">Username Prefix (Optional)</label><input type="text" id="bulkUsernamePrefix" placeholder="e.g., v-"></div>
+                        <div class="form-group"><label for="bulkUsernameLength">Username Length (after prefix)</label><input type="number" id="bulkUsernameLength" value="6"></div>
+                        <div class="form-group"><label for="bulkPasswordLength">Password Length</label><input type="number" id="bulkPasswordLength" value="6"></div>
+                        <div class="form-group">
+                            <label for="bulkUsernameCharset">Username Characters</label>
+                            <select id="bulkUsernameCharset">
+                                <option value="alphanumeric" selected>Alphanumeric (Upper & Lower)</option>
+                                <option value="alphanumeric_upper">Alphanumeric (Upper Case Only)</option>
+                                <option value="alphanumeric_lower">Alphanumeric (Lower Case Only)</option>
+                                <option value="numeric">Numeric Only</option>
+                                <option value="alpha_upper">Alphabetical (Upper Case Only)</option>
+                                <option value="alpha_lower">Alphabetical (Lower Case Only)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="bulkPasswordCharset">Password Characters</label>
+                            <select id="bulkPasswordCharset">
+                                <option value="alphanumeric_symbols" selected>Alphanumeric + Symbols</option>
+                                <option value="alphanumeric">Alphanumeric (Upper & Lower)</option>
+                                <option value="alphanumeric_upper">Alphanumeric (Upper Case Only)</option>
+                                <option value="alphanumeric_lower">Alphanumeric (Lower Case Only)</option>
+                                <option value="numeric">Numeric Only</option>
+                                <option value="alpha_upper">Alphabetical (Upper Case Only)</option>
+                                <option value="alpha_lower">Alphabetical (Lower Case Only)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success"><i class="fas fa-users-cog"></i> Generate Vouchers</button>
+                </form>
+                <div id="bulkCreateResultDisplay" style="display:none; margin-top: 1.5rem;">
+                    <h4>Generated Credentials:</h4>
+                    <textarea id="bulkCreateCredentials" rows="8" class="form-group" style="width:100%; font-family: monospace;" readonly></textarea>
+                    <button id="exportVouchersHTMLButton" class="btn btn-info" style="margin-top: 10px; display: none;">
+                        <i class="fas fa-eye"></i> View Vouchers (HTML)
+                    </button>
+                    <button id="exportVouchersPDFButton" class="btn btn-danger" style="margin-top: 10px; margin-left: 10px; display: none;">
+                        <i class="fas fa-file-pdf"></i> Download Vouchers (PDF)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="sessions" class="tab-content" role="tabpanel" aria-labelledby="tab-sessions">
+             <div class="panel">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>Active Sessions</h3>
+                    <button class="btn btn-primary btn-sm" onclick="loadActiveSessions()"><i class="fas fa-sync-alt"></i> Refresh</button>
+                </div>
+                <div class="table-container">
+                    <table id="sessionsTable">
+                        <thead>
+                            <tr>
+                                <th>Username</th><th>IP Address</th><th>MAC Address</th><th>Uptime</th>
+                                <th>Data Usage</th><th>Time Left</th><th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                             <tr class="empty-state-row"><td colspan="7" class="empty-state-td"><div class="empty-state-container" style="min-height: 200px;"><div class="loading-spinner" style="font-size: 1.8em; margin-bottom: 1.2rem; color: var(--primary-color);"></div><h5 class="empty-state-title" style="margin-bottom: 0.5rem;">Loading sessions...</h5><p class="empty-state-text">Please wait while we fetch active session data.</p></div></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="analytics" class="tab-content" role="tabpanel" aria-labelledby="tab-analytics">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <div class="panel" style="flex-grow: 1; margin: 0; text-align: center;">
+                    <h3 id="analyticsTotalData" style="font-size: 1.5em; color: var(--primary-color);">Total Data Transferred: -</h3>
+                </div>
+                <button id="refreshAnalyticsButton" class="btn btn-primary" style="margin-left: 1.5rem;"><i class="fas fa-sync-alt"></i> Refresh</button>
+            </div>
+            
+            <div class="analytics-grid">
+                <div class="panel">
+                    <h3 class="panel-header">Data Usage by Profile</h3>
+                    <div class="chart-container">
+                        <canvas id="profileUsageChart"></canvas>
+                        <div id="profileUsageChartEmptyState" class="empty-state-container" style="display: none; position: absolute; top: 0; left: 0; min-height: 300px;">
+                            <div class="empty-state-icon"><i class="fas fa-chart-pie"></i></div>
+                            <h5 class="empty-state-title">No Profile Data</h5>
+                            <p class="empty-state-text">No data usage by profile to display currently.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <h3 class="panel-header">Top 10 Users by Data Usage</h3>
+                     <div class="chart-container">
+                        <canvas id="topUsersChart"></canvas>
+                        <div id="topUsersChartEmptyState" class="empty-state-container" style="display: none; position: absolute; top: 0; left: 0; min-height: 300px;">
+                            <div class="empty-state-icon"><i class="fas fa-users"></i></div>
+                            <h5 class="empty-state-title">No User Data</h5>
+                            <p class="empty-state-text">No user data usage to display for the top 10 chart.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="historical-analytics" class="tab-content" role="tabpanel" aria-labelledby="tab-historical-analytics">
+            <div class="panel">
+                <h3 class="panel-header">Historical Data Analysis</h3>
+                <div class="form-grid" style="margin-bottom: 2rem; align-items: flex-end;">
+                    <div class="form-group">
+                        <label for="historicalStartDate">Start Date</label>
+                        <input type="date" id="historicalStartDate" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label for="historicalEndDate">End Date</label>
+                        <input type="date" id="historicalEndDate" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label for="historicalInterval">Interval</label>
+                        <select id="historicalInterval" class="form-control">
+                            <option value="daily" selected>Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <button id="loadHistoricalDataButton" class="btn btn-primary" style="width: 100%;"><i class="fas fa-search"></i> Load Data</button>
+                    </div>
+                </div>
+
+                <div class="analytics-grid">
+                    <div class="panel">
+                        <h3 class="panel-header">Total Data Usage Over Time</h3>
+                        <div class="chart-container">
+                            <canvas id="historicalUsageChart"></canvas>
+                             <div id="historicalUsageChartEmptyState" class="empty-state-container" style="display: none; position: absolute; top: 0; left: 0; min-height: 300px;">
+                                <div class="empty-state-icon"><i class="fas fa-chart-bar"></i></div>
+                                <h5 class="empty-state-title">No Data</h5>
+                                <p class="empty-state-text">No historical usage data to display for the selected period.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <h3 class="panel-header">Peak Concurrent Users Over Time</h3>
+                        <div class="chart-container">
+                            <canvas id="historicalPeakUsersChart"></canvas>
+                            <div id="historicalPeakUsersChartEmptyState" class="empty-state-container" style="display: none; position: absolute; top: 0; left: 0; min-height: 300px;">
+                                <div class="empty-state-icon"><i class="fas fa-users"></i></div>
+                                <h5 class="empty-state-title">No Data</h5>
+                                <p class="empty-state-text">No peak user data to display for the selected period.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                 <div class="panel" style="margin-top: 2rem;">
+                    <h3 class="panel-header">User Specific Activity (Coming Soon)</h3>
+                    <p>Detailed activity logs for individual users will be available here.</p>
+                    <!-- Placeholder for user selection and activity display -->
+                </div>
+            </div>
+        </div>
+        
+        <div id="maintenance" class="tab-content" role="tabpanel" aria-labelledby="tab-maintenance">
+            <div class="panel">
+                <h3 class="panel-header"><i class="fas fa-id-badge" style="margin-right: 8px;"></i>User Profiles</h3>
+                <button class="btn btn-success" style="margin-bottom: 1rem;" onclick="openProfileModal()"><i class="fas fa-plus"></i> Add Profile</button>
+                <div class="table-container">
+                    <table id="profilesTable">
+                        <thead><tr><th>Name</th><th>Rate Limit</th><th>Session Timeout</th><th>Shared Users</th><th>Actions</th></tr></thead>
+                        <tbody><tr><td colspan="5" style="text-align: center;">Loading profiles...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="panel">
+                <h3 class="panel-header"><i class="fas fa-broom" style="margin-right: 8px;"></i>Cleanup</h3>
+                <p>Automatically find and delete users who have used up their time or data allowance.</p>
+                <button class="btn btn-danger" onclick="deleteExpiredUsers()"><i class="fas fa-trash-alt"></i> Delete Expired Users</button>
+            </div>
+
+            <div class="panel">
+                <h3 class="panel-header"><i class="fas fa-user-tag" style="margin-right: 8px;"></i>Delete Users by Profile</h3>
+                <div class="form-group">
+                    <label for="deleteByProfileSelect">Select Profile to Delete Users From:</label>
+                    <select id="deleteByProfileSelect"></select> 
+                </div>
+                <button id="deleteByProfileButton" class="btn btn-danger"><i class="fas fa-trash-alt"></i> Delete Users by Profile</button>
+            </div>
+
+            <div class="panel">
+                <h3 class="panel-header"><i class="fas fa-user-check" style="margin-right: 8px;"></i>Delete Users by Active Status</h3>
+                <div class="form-group">
+                    <label for="deleteByStatusSelect">Select User Status to Delete:</label>
+                    <select id="deleteByStatusSelect"> 
+                        <option value="">-- Select Status --</option>
+                        <option value="active">Active Users</option>
+                        <option value="disabled">Disabled Users</option>
+                    </select>
+                </div>
+                <button id="deleteByStatusButton" class="btn btn-danger"><i class="fas fa-user-slash"></i> Delete Users by Status</button>
+            </div>
+        </div>
+
+        <div id="settings" class="tab-content" role="tabpanel" aria-labelledby="tab-settings">
+            <div class="panel">
+                <h3 class="panel-header">Router Connection</h3>
+                 <form id="configForm">
+                    <div class="form-grid">
+                        <div class="form-group"><label>Router IP Address</label><input type="text" id="routerHost"></div>
+                        <div class="form-group"><label>API Port</label><input type="number" id="routerPort"></div>
+                        <div class="form-group"><label>Username</label><input type="text" id="routerUsername"></div>
+                        <div class="form-group"><label>Password</label><input type="password" id="routerPassword" placeholder="Enter new password to update"></div>
+                        <div class="form-group"><label>Hotspot Login URL (for QR Codes)</label><input type="text" id="hotspotLoginUrl" placeholder="e.g. http://my.hotspot/login"></div>
+                    </div>
+                    <div style="display: flex; gap: 1rem;">
+                        <button type="button" class="btn btn-primary" onclick="testConnection()"><i class="fas fa-plug"></i> Test</button>
+                        <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+
+    <div id="userModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form id="editUserForm">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="userModalTitle">Edit User: <span id="editUsernameDisplay"></span></h5>
+                        <button type="button" class="close-button" onclick="closeModal('userModal')" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="editUsernameOrig">
+                        <div class="form-group"><label>New Password</label><input type="text" id="editPassword" placeholder="Leave blank to keep current"></div>
+                        <div class="form-group"><label>Profile</label><select id="editProfile"></select></div>
+                        <div class="form-group"><label>Time Limit</label><input type="text" id="editTimeLimit"></div>
+                        <div class="form-group"><label>Data Limit (MB)</label><input type="number" id="editDataLimit"></div>
+                        <div class="form-group"><label>Comment</label><input type="text" id="editComment"></div>
+                        <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" id="editDisabled" style="width: auto;"><label for="editDisabled" style="margin: 0;">Disabled</label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn" onclick="closeModal('userModal')">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="profileModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form id="profileForm">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="profileModalTitle">Add New Profile</h5>
+                        <button type="button" class="close-button" onclick="closeModal('profileModal')" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="profileId">
+                        <div class="form-group"><label for="profileName">Name</label><input type="text" id="profileName" required></div>
+                        <div class="form-group"><label for="profileRateLimit">Rate Limit (Upload/Download)</label><input type="text" id="profileRateLimit" placeholder="e.g., 512k/2M"></div>
+                        <div class="form-group"><label for="profileSessionTimeout">Session Timeout</label><input type="text" id="profileSessionTimeout" placeholder="e.g., 1d 00:00:00"></div>
+                        <div class="form-group"><label for="profileSharedUsers">Shared Users</label><input type="number" id="profileSharedUsers" placeholder="e.g., 1"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn" onclick="closeModal('profileModal')">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save Profile</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+<script>
+const API_BASE_URL = ''; // Same origin
+let currentUsers = [];
+let currentProfiles = [];
+let currentSessions = [];
+let lastGeneratedBatchCredentials = []; // To store the last batch of generated credentials
+let analyticsDataLoaded = false; // Flag for initial analytics load
+let cachedTranslations = {}; // For storing fetched translations
+
+// Chart instances
+let profileUsageChartInstance;
+let topUsersChartInstance;
+let historicalUsageChartInstance;
+let historicalPeakUsersChartInstance;
+
+// Helper function to get translations
+function getTranslation(key, ...args) {
+    let translated = cachedTranslations[key] || key;
+    if (args.length > 0) {
+        args.forEach((arg, index) => {
+            translated = translated.replace(new RegExp(`\\{${index}\\}`, 'g'), arg);
+        });
+    }
+    return translated;
+}
+
+const logger = { // Simple logger
+    info: console.log,
+    warn: console.warn,
+    error: console.error,
+    debug: console.debug
+};
+
+// --- Init & Navigation ---
+document.addEventListener('DOMContentLoaded', () => {
+    // Theme Toggle Logic
+    const themeToggle = document.getElementById('themeToggleCheckbox');
+    const themeToggleLabel = document.getElementById('themeToggleLabel');
+    const body = document.body;
+
+    function applyTheme(theme) {
+        if (theme === 'dark') {
+            body.classList.add('dark-mode');
+            if (themeToggle) themeToggle.checked = true;
+            if (themeToggleLabel) themeToggleLabel.textContent = 'Dark Mode';
+        } else {
+            body.classList.remove('dark-mode');
+            if (themeToggle) themeToggle.checked = false;
+            if (themeToggleLabel) themeToggleLabel.textContent = 'Light Mode';
+        }
+        localStorage.setItem('theme', theme);
+        // Dispatch a custom event that charts can listen to for theme changes
+        document.dispatchEvent(new CustomEvent('themeChanged', { detail: { theme: theme } }));
+    }
+
+    if (themeToggle) {
+        themeToggle.addEventListener('change', () => {
+            if (themeToggle.checked) {
+                applyTheme('dark');
+            } else {
+                applyTheme('light');
+            }
+        });
+    }
+
+    // Load saved theme or OS preference
+    const savedTheme = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+    if (savedTheme) {
+        applyTheme(savedTheme);
+    } else if (prefersDark) {
+        applyTheme('dark');
+    } else {
+        applyTheme('light'); // Default to light
+    }
+    // End Theme Toggle Logic
+
+    document.querySelectorAll('.nav-link').forEach(link => {
+        link.addEventListener('click', e => {
+            e.preventDefault();
+            const tabName = link.dataset.tab;
+
+            if (tabName === 'analytics' && !analyticsDataLoaded) {
+                loadAnalyticsData();
+                analyticsDataLoaded = true;
+            }
+            
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            link.classList.add('active');
+
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            
+            document.getElementById('pageTitle').textContent = link.querySelector('span').textContent;
+        });
+    });
+    
+    // Initial load
+    init();
+    
+    // Setup static translated UI elements not covered by other functions
+    setupStaticTranslations();
+
+
+    // Setup filter listeners
+    document.getElementById('userSearchInput').addEventListener('input', () => filterAndDisplayUsers());
+    document.getElementById('userFilterProfile').addEventListener('change', () => filterAndDisplayUsers());
+    document.getElementById('userFilterStatus').addEventListener('change', () => filterAndDisplayUsers());
+
+    // Setup Maintenance button listeners
+    const deleteByProfileBtn = document.getElementById('deleteByProfileButton');
+    if (deleteByProfileBtn) {
+        deleteByProfileBtn.addEventListener('click', handleDeleteUsersByProfile);
+    }
+
+    const deleteByStatusBtn = document.getElementById('deleteByStatusButton');
+    if (deleteByStatusBtn) {
+        deleteByStatusBtn.addEventListener('click', handleDeleteUsersByStatus);
+    }
+    
+    // Setup form submissions
+    document.getElementById('configForm').addEventListener('submit', handleConfigSave);
+    document.getElementById('createUserForm').addEventListener('submit', handleCreateUser);
+    document.getElementById('bulkCreateUserForm').addEventListener('submit', handleBulkCreateUsers);
+    document.getElementById('editUserForm').addEventListener('submit', handleEditUser);
+    document.getElementById('profileForm').addEventListener('submit', handleProfileSave);
+
+    const logoutButton = document.getElementById('logoutButton');
+    if (logoutButton) {
+        logoutButton.addEventListener('click', async function(event) {
+            event.preventDefault();
+            if (confirm('Are you sure you want to logout?')) {
+                showGlobalSpinner(true); // Show spinner during API call
+                try {
+                    const result = await apiCall('/logout', { method: 'POST' });
+                    if (result && result.success) {
+                        // Spinner will be hidden by page reload/redirect
+                        window.location.href = '/'; // Redirect to login page
+                    } else {
+                        // apiCall already shows an alert on failure via its own catch/showAlert
+                        showGlobalSpinner(false); // Hide spinner if logout failed but page didn't redirect
+                    }
+                } catch (error) {
+                    // This catch is for unexpected errors not handled by apiCall's own try/catch
+                    logger.error("Logout failed unexpectedly:", error);
+                    showAlert('globalAlert', 'danger', 'Logout failed unexpectedly. Please try again.');
+                    showGlobalSpinner(false);
+                }
+            }
+        });
+    }
+
+    const exportHTMLButton = document.getElementById('exportVouchersHTMLButton');
+    if (exportHTMLButton) {
+        exportHTMLButton.addEventListener('click', function() {
+            if (!lastGeneratedBatchCredentials || lastGeneratedBatchCredentials.length === 0) {
+                showAlert('globalAlert', 'warning', 'No generated voucher data available to view.');
+                return;
+            }
+            const hotspotLoginUrlValue = document.getElementById('hotspotLoginUrl').value;
+            if (!hotspotLoginUrlValue) {
+                 showAlert('globalAlert', 'warning', 'Hotspot Login URL is not set in Settings (under the Settings Tab). QR Codes cannot be generated for viewing if this is missing.');
+                // Allow to proceed if user wants to view without QR, backend will handle missing URL for QR.
+            }
+
+            // Create a form to POST data to the new tab/window
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = `${API_BASE_URL}/api/vouchers/view_batch_html`;
+            form.target = '_blank'; // Open in a new tab
+
+            const vouchersInput = document.createElement('input');
+            vouchersInput.type = 'hidden';
+            vouchersInput.name = 'vouchers_json';
+            vouchersInput.value = JSON.stringify(lastGeneratedBatchCredentials);
+            form.appendChild(vouchersInput);
+
+            const loginUrlInput = document.createElement('input');
+            loginUrlInput.type = 'hidden';
+            loginUrlInput.name = 'hotspot_login_url';
+            loginUrlInput.value = hotspotLoginUrlValue; // Send even if empty, backend can decide
+            form.appendChild(loginUrlInput);
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        });
+    }
+
+    // Corrected: Ensure only one event listener for exportPDFButton
+    const exportPDFButton = document.getElementById('exportVouchersPDFButton');
+    if (exportPDFButton && !exportPDFButton.hasAttribute('data-listener-attached')) { // Check if listener already attached
+        exportPDFButton.addEventListener('click', function() {
+            if (!lastGeneratedBatchCredentials || lastGeneratedBatchCredentials.length === 0) {
+                showAlert('globalAlert', 'warning', 'No generated voucher data available for PDF export.');
+                return;
+            }
+            const hotspotLoginUrlValue = document.getElementById('hotspotLoginUrl').value;
+            
+            // QRCODE_AVAILABLE is a Python variable, not directly usable in JS unless passed to template.
+            // For now, just check if hotspotLoginUrlValue exists for a more generic warning.
+            if (!hotspotLoginUrlValue) { 
+                 showAlert('globalAlert', 'info', 'Hotspot Login URL is not set in Settings. QR Codes might be omitted in the PDF if this URL is required by the backend for them.');
+            }
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = `${API_BASE_URL}/api/vouchers/download_batch_pdf`;
+
+            const vouchersInput = document.createElement('input');
+            vouchersInput.type = 'hidden';
+            vouchersInput.name = 'vouchers_json';
+            vouchersInput.value = JSON.stringify(lastGeneratedBatchCredentials);
+            form.appendChild(vouchersInput);
+
+            const loginUrlInput = document.createElement('input');
+            loginUrlInput.type = 'hidden';
+            loginUrlInput.name = 'hotspot_login_url';
+            loginUrlInput.value = hotspotLoginUrlValue;
+            form.appendChild(loginUrlInput);
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        });
+        exportPDFButton.setAttribute('data-listener-attached', 'true'); // Mark as listener attached
+    }
+
+    const refreshAnalyticsBtn = document.getElementById('refreshAnalyticsButton');
+    if (refreshAnalyticsBtn) {
+        refreshAnalyticsBtn.addEventListener('click', loadAnalyticsData);
+    }
+
+    const loadHistoricalDataBtn = document.getElementById('loadHistoricalDataButton');
+    if (loadHistoricalDataBtn) {
+        loadHistoricalDataBtn.addEventListener('click', loadHistoricalAnalytics);
+    }
+    
+    // Set default dates for historical analytics
+    const today = new Date();
+    const endDateInput = document.getElementById('historicalEndDate');
+    if(endDateInput) endDateInput.valueAsDate = today;
+    const startDateInput = document.getElementById('historicalStartDate');
+    if(startDateInput) {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(today.getDate() - 7);
+        startDateInput.valueAsDate = sevenDaysAgo;
+    }
+
+});
+
+async function init() {
+    // Fetch translations first
+    try {
+        cachedTranslations = await apiCall('/translations', {}, true); // Pass true to suppress global spinner for this call if desired
+        logger.info("Translations loaded.");
+    } catch (error) {
+        logger.error("Failed to load translations:", error);
+        //cachedTranslations will remain empty, getTranslation will fallback to keys
+    }
+    // Now update UI elements that depend on translations being loaded
+    updateStaticTranslatedText();
+
+
+    await checkConnection();
+    await loadDashboardStats();
+    await loadUsers();
+    await loadProfiles(); // This will now use getTranslation for default options
+    await loadActiveSessions();
+    await loadConfig();
+    setupDeleteByStatusDropdown(); // Populate #deleteByStatusSelect with translated options
+    
+    // Auto-refresh data every 60 seconds
+    setInterval(() => {
+        if (document.getElementById('dashboard').classList.contains('active')) {
+             loadDashboardStats();
+        }
+        if (document.getElementById('users').classList.contains('active')) {
+             loadUsers(true); // silent refresh
+        }
+        if (document.getElementById('sessions').classList.contains('active')) {
+             loadActiveSessions();
+        }
+    }, 60000);
+}
+
+// --- API & Data Loading ---
+async function apiCall(endpoint, options = {}) {
+    showGlobalSpinner(true);
+
+    // Prepare headers
+    const headers = {
+        'Content-Type': 'application/json', // Default content type
+        ...options.headers // Spread any headers passed in options
+    };
+
+    // Add CSRF token for relevant methods
+    const httpMethod = options.method ? options.method.toUpperCase() : 'GET';
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(httpMethod)) {
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        if (csrfToken) {
+            headers['X-CSRFToken'] = csrfToken;
+        } else {
+            console.warn('CSRF token not found in meta tag. Requests that modify state might fail.');
+            // Optionally, you could prevent the request here or show an immediate error.
+        }
+    }
+    
+    // Update options with potentially modified headers
+    const fetchOptions = {
+        ...options,
+        headers: headers,
+        credentials: 'include' // Explicitly add this line
+    };
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api${endpoint}`, fetchOptions);
+        const contentType = response.headers.get("content-type");
+        
+        if (!response.ok) {
+            // Attempt to parse error as JSON, otherwise use text
+            let errorPayload;
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                try {
+                    errorPayload = await response.json();
+                } catch (e) {
+                    // If JSON parsing fails even if header says JSON, read as text.
+                    logger.error(`apiCall: Failed to parse JSON error response from ${endpoint} despite Content-Type. Error: ${e}`);
+                    errorPayload = { message: (await response.text()).substring(0,500) || `HTTP error! status: ${response.status}` };
+                }
+            } else {
+                 // If not JSON, capture the text response for the error message
+                const textResponse = await response.text();
+                logger.warn(`apiCall to ${endpoint} received non-JSON error response (type: ${contentType}). Body: ${textResponse.substring(0, 500)}...`);
+                errorPayload = { message: textResponse.substring(0,500) || `HTTP error! status: ${response.status}, non-JSON response.` };
+            }
+            throw new Error(errorPayload.message || `HTTP error! status: ${response.status}`);
+        }
+
+        // If response.ok, we still must check content type before parsing
+        if (contentType && contentType.indexOf("application/json") === -1) {
+            const textResponse = await response.text();
+            logger.error(`apiCall to ${endpoint} expected JSON but received ${contentType}. Response body: ${textResponse.substring(0, 500)}...`);
+            throw new Error(`Expected JSON response from server for ${endpoint}, but received ${contentType}.`);
+        }
+        
+        // If we reach here, response is OK and content type indicates JSON (or no content type header, assume JSON)
+        return await response.json();
+    } catch (error) {
+        // showAlert is already called by some specific handlers, but a generic one here might be too noisy
+        // For now, let's ensure the error is re-thrown or handled appropriately by the caller.
+        // The existing showAlert in the original catch block is fine.
+        showAlert('globalAlert', 'danger', error.message); // Keep this for now.
+        return null; // Or rethrow error depending on desired handling by callers
+    } finally {
+        showGlobalSpinner(false);
+    }
+}
+
+async function checkConnection(isInitialLoad = false) {
+    const statusEl = document.getElementById('connectionStatus');
+    // Do not show global spinner for the initial, automatic checkConnection call.
+    // Only show for manual calls (e.g. from Test button in settings).
+    // The apiCall function itself handles the spinner, so we need a way to tell it.
+    // For now, assume apiCall's spinner is acceptable, or adjust apiCall to accept a noSpinner option.
+    // Let's assume the spinner shown by apiCall is fine for now.
+    const result = await apiCall('/test-connection', { method: 'POST' });
+
+    let isConnected = false;
+    if (result && result.success) {
+        statusEl.className = 'connected';
+        statusEl.innerHTML = `<i class="fas fa-check-circle"></i><span> ${result.message}</span>`;
+        isConnected = true;
+        // Hide any persistent "go to settings" message if connection is now good.
+        const persistentMessage = document.getElementById('persistentConnectionMessage');
+        if (persistentMessage) persistentMessage.style.display = 'none';
+
+    } else {
+        statusEl.className = 'disconnected';
+        const failureMessage = result ? result.message : getTranslation('Connection test failed. Router might be unreachable.');
+        statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> ${failureMessage}</span>`;
+        
+        // Show a persistent message guiding to Settings, only if not already on settings page.
+        if (document.getElementById('settings') && !document.getElementById('settings').classList.contains('active')) {
+            showPersistentConnectionMessage(`Mikrotik router not connected. Please <a href="#" onclick="navigateToTab('settings'); return false;">configure settings</a>.`);
+        }
+        isConnected = false;
+    }
+    updateUIAfterConnectionCheck(isConnected, isInitialLoad);
+}
+
+function showPersistentConnectionMessage(message) {
+    let msgDiv = document.getElementById('persistentConnectionMessage');
+    if (!msgDiv) {
+        msgDiv = document.createElement('div');
+        msgDiv.id = 'persistentConnectionMessage';
+        msgDiv.className = 'alert alert-warning'; // Use warning style
+        msgDiv.style.marginTop = '1rem';
+        msgDiv.style.textAlign = 'center';
+        // Insert it after page-header
+        const pageHeader = document.querySelector('.page-header');
+        if (pageHeader && pageHeader.parentNode) {
+            pageHeader.parentNode.insertBefore(msgDiv, pageHeader.nextSibling);
+        } else { // Fallback if page-header is not found
+            document.querySelector('.main-content').prepend(msgDiv);
+        }
+    }
+    msgDiv.innerHTML = message;
+    msgDiv.style.display = 'block';
+}
+
+function updateUIAfterConnectionCheck(isConnected, isInitialLoad = false) {
+    // Selectors for elements to disable/enable
+    // This list might need to be expanded based on UI elements that interact with Mikrotik
+    const mikrotikDependentElements = [
+        // User Tab
+        '#userSearchInput', '#userFilterProfile', '#userFilterStatus',
+        ...document.querySelectorAll('#usersTable button'), // Refresh, edit, delete user buttons
+        ...document.querySelectorAll('#users .panel-header button'), // Refresh button in user list
+        ...document.querySelectorAll('#users .btn-success, #users .btn-primary, #users .btn-danger'), // Export buttons
+
+        // Create Tab forms and buttons
+        '#createUserForm input', '#createUserForm select', '#createUserForm button',
+        '#bulkCreateUserForm input', '#bulkCreateUserForm select', '#bulkCreateUserForm button',
+        '#exportVouchersHTMLButton', '#exportVouchersPDFButton',
+
+        // Active Sessions Tab
+        ...document.querySelectorAll('#sessionsTable button'), // Disconnect buttons
+        ...document.querySelectorAll('#sessions .panel-header button'), // Refresh button
+
+        // Analytics Tab
+        '#refreshAnalyticsButton', // Refresh button for analytics
+
+        // Maintenance Tab (excluding profile management if some actions are local)
+        // Profiles might be manageable (view cached) even if offline, but add/edit/delete needs connection.
+        // For simplicity, disabling all profile table actions and add button.
+        ...document.querySelectorAll('#profilesTable button'), // Edit, delete profile
+        ...document.querySelectorAll('#maintenance .panel:nth-child(1) .btn-success'), // Add profile button
+        ...document.querySelectorAll('#maintenance .panel:nth-child(2) .btn-danger'), // Delete expired users
+        ...document.querySelectorAll('#maintenance .panel:nth-child(3) .btn-danger'), // Delete by profile
+        ...document.querySelectorAll('#maintenance .panel:nth-child(4) .btn-danger'), // Delete by status
+        
+        // Settings tab - Router connection part. Test button should be enabled. Save can be enabled.
+        // '#configForm input', // Keep these enabled for user to fill
+        // '#configForm button[type="submit"]', // Save button in settings
+        // Test button in settings should always be enabled:
+        // document.querySelector('#configForm button[onclick="testConnection()"]').disabled = false;
+    ];
+
+    mikrotikDependentElements.forEach(selector => {
+        if (typeof selector === 'string') {
+            const element = document.querySelector(selector);
+            if (element) element.disabled = !isConnected;
+        } else { // If it's already an element (from querySelectorAll)
+            selector.disabled = !isConnected;
+        }
+    });
+
+    // Special handling for elements that should always be enabled or based on other conditions
+    document.querySelector('#configForm button[onclick="testConnection()"]').disabled = false; // Always enable test button
+    document.querySelector('#configForm button[type="submit"]').disabled = false; // Always enable save config button
+
+    // If not connected and it's the initial load, clear dynamic data areas
+    // or show "not connected" messages.
+    if (!isConnected && isInitialLoad) {
+        document.getElementById('totalUsers').textContent = '-';
+        document.getElementById('activeSessions').textContent = '-';
+        document.querySelector('#usersTable tbody').innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
+        document.querySelector('#sessionsTable tbody').innerHTML = `<tr><td colspan="7" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
+        document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
+        const analyticsTotalDataEl = document.getElementById('analyticsTotalData');
+        if (analyticsTotalDataEl) analyticsTotalDataEl.textContent = getTranslation('Total Data Transferred: Not Connected');
+        // Clear charts or show placeholder
+        if (profileUsageChartInstance) profileUsageChartInstance.destroy();
+        if (topUsersChartInstance) topUsersChartInstance.destroy();
+         // Analytics specific message
+        const profileCtx = document.getElementById('profileUsageChart').getContext('2d');
+        const topUsersCtx = document.getElementById('topUsersChart').getContext('2d');
+        profileCtx.clearRect(0,0,profileCtx.canvas.width, profileCtx.canvas.height); // Clear canvas
+        topUsersCtx.clearRect(0,0,topUsersCtx.canvas.width, topUsersCtx.canvas.height); // Clear canvas
+        // Optionally, draw a "Not Connected" message on canvas
+    }
+}
+
+
+async function loadDashboardStats() {
+    const data = await apiCall('/dashboard-stats');
+    if (data) { // apiCall returns null on connection error to Mikrotik via service layer
+        document.getElementById('totalUsers').textContent = data.total_users !== undefined ? data.total_users : '-';
+        document.getElementById('activeSessions').textContent = data.active_sessions !== undefined ? data.active_sessions : '-';
+    } else {
+        // If data is null (likely Mikrotik connection issue), ensure UI reflects this
+        document.getElementById('totalUsers').textContent = '-';
+        document.getElementById('activeSessions').textContent = '-';
+        // A more specific message might be set by checkConnection's UI update
+    }
+}
+
+async function loadUsers(silent = false) {
+    const tbody = document.querySelector('#usersTable tbody');
+    if (!document.querySelector('#connectionStatus').classList.contains('connected') && !silent) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Not connected to Mikrotik router. Cannot load users.')} <a href="#" onclick="navigateToTab('settings'); return false;">Configure Settings</a>.</td></tr>`;
+        return;
+    }
+    if (!silent) {
+        const loadingHTML = `
+            <tr class="empty-state-row">
+                <td colspan="9" class="empty-state-td">
+                    <div class="empty-state-container" style="min-height: 200px;">
+                        <div class="loading-spinner" style="font-size: 1.8em; margin-bottom: 1.2rem; color: var(--primary-color);"></div>
+                        <h5 class="empty-state-title" style="margin-bottom: 0.5rem;">${getTranslation('Loading users...')}</h5>
+                        <p class="empty-state-text">Please wait while we fetch the user data from the router.</p>
+                    </div>
+                </td>
+            </tr>`;
+        tbody.innerHTML = loadingHTML;
+    }
+    
+    const data = await apiCall('/users');
+    if (data && data.users) {
+        currentUsers = data.users;
+        // If no search/filter is active and the list is empty, show the "No users on router" empty state
+        if (currentUsers.length === 0 && 
+            !document.getElementById('userSearchInput').value && 
+            !document.getElementById('userFilterProfile').value && 
+            !document.getElementById('userFilterStatus').value) {
+            
+            const emptyHTML = `
+                <tr class="empty-state-row">
+                    <td colspan="9" class="empty-state-td">
+                        <div class="empty-state-container">
+                            <div class="empty-state-icon"><i class="fas fa-ghost"></i></div>
+                            <h5 class="empty-state-title">No Hotspot Users Found</h5>
+                            <p class="empty-state-text">There are currently no users configured on your Mikrotik router. You can add some in the 'Create' section!</p>
+                            <button class="btn btn-primary empty-state-action" onclick="document.querySelector('.nav-link[data-tab=\\'create\\']').click();">
+                                <i class="fas fa-user-plus"></i> Create User
+                            </button>
+                        </div>
+                    </td>
+                </tr>`;
+            tbody.innerHTML = emptyHTML;
+        } else {
+            filterAndDisplayUsers(); // Otherwise, filter and display (which handles "no match" itself)
+        }
+    } else if (data === null && document.querySelector('#connectionStatus').classList.contains('connected')) {
+        // Data is null but connection status was 'connected' - implies an issue during API call not related to initial connection
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Error loading users. Please try again.')}</td></tr>`;
+    } else if (!document.querySelector('#connectionStatus').classList.contains('connected')) {
+        // If not connected, filterAndDisplayUsers might not be called or might show "no users match"
+        // Ensure a clear message about connection is shown if users couldn't be loaded due to it.
+        // This is partly redundant with the check at the start of the function.
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Not connected to Mikrotik router. Cannot load users.')}</td></tr>`;
+    }
+    // If data is not null but data.users is missing, it's an unexpected response.
+    // The general error from apiCall might cover this, or a specific message here.
+}
+
+
+async function loadProfiles() {
+    const profilesSelects = [
+        '#profile', '#bulkProfile', '#editProfile', 
+        '#userFilterProfile', '#exportProfileFilter', '#deleteByProfileSelect'
+    ];
+    if (!document.querySelector('#connectionStatus').classList.contains('connected')) {
+        document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Not connected to Mikrotik router. Cannot load profiles.')} <a href="#" onclick="navigateToTab('settings'); return false;">Configure Settings</a>.</td></tr>`;
+        // Clear profile dropdowns or set a "not connected" option
+        profilesSelects.forEach(selId => {
+            const select = document.querySelector(selId);
+            if (select) {
+                const defaultOptionKey = (selId === '#userFilterProfile' || selId === '#exportProfileFilter' || selId === '#deleteByProfileSelect') ? 
+                                         (selId === '#deleteByProfileSelect' ? '-- Select Profile --' : 'All Profiles') 
+                                         : 'Select Profile';
+                select.innerHTML = `<option value="">${getTranslation(defaultOptionKey)}</option><option value="" disabled>${getTranslation('Not Connected')}</option>`;
+            }
+        });
+        currentProfiles = []; // Ensure currentProfiles is empty
+        displayProfiles(); // Update table display (will show "not connected")
+        return;
+    }
+
+    const data = await apiCall('/profiles');
+    if (data && data.profiles) {
+        currentProfiles = data.profiles;
+        const profileSelectConfigs = [
+            { id: '#profile', defaultTextKey: 'Select Profile' },
+            { id: '#bulkProfile', defaultTextKey: 'Select Profile' },
+            { id: '#editProfile', defaultTextKey: 'Select Profile' },
+            { id: '#userFilterProfile', defaultTextKey: 'All Profiles' },
+            { id: '#exportProfileFilter', defaultTextKey: 'All Profiles' },
+            { id: '#deleteByProfileSelect', defaultTextKey: '-- Select Profile --'}
+        ];
+        profileSelectConfigs.forEach(selConfig => {
+            const select = document.querySelector(selConfig.id);
+            if(select) {
+                const currentVal = select.value;
+                select.innerHTML = `<option value="">${getTranslation(selConfig.defaultTextKey)}</option>`;
+                currentProfiles.forEach(p => select.add(new Option(p.name, p.name)));
+                if(currentVal && currentProfiles.some(p => p.name === currentVal)) select.value = currentVal;
+                else select.value = ""; // Reset if previous value not in new list
+            }
+        });
+        displayProfiles(); 
+    } else {
+        // Handle case where data is null (connection issue) or data.profiles is missing
+        document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Could not load profiles.')}</td></tr>`;
+        currentProfiles = []; // Ensure currentProfiles is empty
+        displayProfiles(); // Update table display (will show "no profiles found")
+    }
+}
+
+function setupDeleteByStatusDropdown() {
+    const select = document.getElementById('deleteByStatusSelect');
+    if (select) { // Ensure this select is populated with translated options
+        const currentVal = select.value;
+        select.innerHTML = `
+            <option value="">${getTranslation('-- Select Status --')}</option>
+            <option value="active">${getTranslation('Active Users')}</option>
+            <option value="disabled">${getTranslation('Disabled Users')}</option>
+        `;
+        if(currentVal) select.value = currentVal; // Preserve selection if valid
+    }
+}
+
+function updateStaticTranslatedText() {
+    const deleteByProfileButton = document.getElementById('deleteByProfileButton');
+    if (deleteByProfileButton) {
+        deleteByProfileButton.innerHTML = `<i class="fas fa-trash-alt"></i> ${getTranslation('Delete Users by Profile')}`;
+    }
+    const deleteByStatusButton = document.getElementById('deleteByStatusButton');
+    if (deleteByStatusButton) {
+        deleteByStatusButton.innerHTML = `<i class="fas fa-user-slash"></i> ${getTranslation('Delete Users by Status')}`;
+    }
+
+    // Also update labels for these sections
+    const deleteByProfileLabel = document.querySelector('label[for="deleteByProfileSelect"]');
+    if (deleteByProfileLabel) {
+        deleteByProfileLabel.textContent = getTranslation('Select Profile to Delete Users From:');
+    }
+    const deleteByStatusLabel = document.querySelector('label[for="deleteByStatusSelect"]');
+    if (deleteByStatusLabel) {
+        deleteByStatusLabel.textContent = getTranslation('Select User Status to Delete:');
+    }
+    
+    // Update panel headers in Maintenance tab for the new sections
+    // This requires finding them more robustly if more panels are added.
+    const maintenanceTab = document.getElementById('maintenance');
+    if (maintenanceTab) {
+        const panels = maintenanceTab.querySelectorAll('.panel');
+        // Update "Delete Users by Profile" panel header
+        if (panels.length > 2 && panels[2].querySelector('h3')) { 
+            panels[2].querySelector('h3').textContent = getTranslation('Delete Users by Profile');
+        }
+        // Update "Delete Users by Active Status" panel header
+        if (panels.length > 3 && panels[3].querySelector('h3')) { 
+            panels[3].querySelector('h3').textContent = getTranslation('Delete Users by Active Status');
+        }
+    }
+     // Ensure other static texts are also updated if any were missed by dynamic updates
+     // e.g. sidebar items, modal titles (though they are often set dynamically)
+    document.querySelectorAll('.sidebar-nav a span').forEach(span => {
+        const key = span.parentElement.dataset.tab; // Assuming tab name can serve as a key or part of it
+        if(key){ // Example: if tab 'dashboard' has span 'Dashboard'
+             const translatedText = getTranslation(span.textContent); // Try to translate existing text
+             if(translatedText !== span.textContent) span.textContent = translatedText;
+        }
+    });
+    // Page title is set dynamically on tab change, so no need to update it here.
+}
+
+function setupStaticTranslations() {
+    // This function is called before translations are loaded.
+    // Its purpose would be to set up elements if they depended on structure, not text.
+    // Text updates should happen in updateStaticTranslatedText AFTER translations are loaded.
+}
+
+async function loadActiveSessions() {
+    const tbody = document.querySelector('#sessionsTable tbody');
+    if (!document.querySelector('#connectionStatus').classList.contains('connected')) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;">${getTranslation('Not connected to Mikrotik router. Cannot load sessions.')} <a href="#" onclick="navigateToTab('settings'); return false;">Configure Settings</a>.</td></tr>`;
+        return;
+    }
+    const loadingHTML = `
+        <tr class="empty-state-row">
+            <td colspan="7" class="empty-state-td">
+                <div class="empty-state-container" style="min-height: 200px;">
+                    <div class="loading-spinner" style="font-size: 1.8em; margin-bottom: 1.2rem; color: var(--primary-color);"></div>
+                    <h5 class="empty-state-title" style="margin-bottom: 0.5rem;">${getTranslation('Loading sessions...')}</h5>
+                    <p class="empty-state-text">Please wait while we fetch active session data.</p>
+                </div>
+            </td>
+        </tr>`;
+    tbody.innerHTML = loadingHTML;
+    
+    const data = await apiCall('/active-sessions');
+    if (data && data.sessions) {
+        currentSessions = data.sessions;
+        if (currentSessions.length === 0) {
+            const emptyHTML = `
+                <tr class="empty-state-row">
+                    <td colspan="7" class="empty-state-td">
+                        <div class="empty-state-container">
+                            <div class="empty-state-icon"><i class="fas fa-wifi-slash"></i></div>
+                            <h5 class="empty-state-title">No Active Sessions</h5>
+                            <p class="empty-state-text">There are currently no active user sessions on the hotspot.</p>
+                        </div>
+                    </td>
+                </tr>`;
+            tbody.innerHTML = emptyHTML;
+            return;
+        }
+        tbody.innerHTML = currentSessions.map(s => `
+            <tr>
+                <td>${s.user || ''}</td>
+                <td>${s.address || ''}</td>
+                <td>${s['mac-address'] || ''}</td>
+                <td>${s.uptime || ''}</td>
+                <td>${formatBytes(s['bytes-in'])} / ${formatBytes(s['bytes-out'])}</td>
+                <td>${s['session-time-left'] || getTranslation('Unlimited')}</td>
+                <td>
+                    <button class="btn btn-danger btn-sm" onclick="disconnectUser('${s['.id']}')">
+                        <i class="fas fa-times"></i> ${getTranslation('Disconnect')}
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } else {
+         tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;">${getTranslation('Could not load sessions.')}</td></tr>`;
+    }
+}
+
+async function loadConfig() {
+    const data = await apiCall('/config');
+    if (data) {
+        document.getElementById('routerHost').value = data.mikrotik.host;
+        document.getElementById('routerPort').value = data.mikrotik.port;
+        document.getElementById('routerUsername').value = data.mikrotik.username;
+        document.getElementById('hotspotLoginUrl').value = data.mikrotik.hotspot_login_url;
+    }
+}
+
+
+// --- Display & Filtering ---
+function filterAndDisplayUsers() {
+    const search = document.getElementById('userSearchInput').value.toLowerCase();
+    const profile = document.getElementById('userFilterProfile').value;
+    const status = document.getElementById('userFilterStatus').value;
+
+    const filtered = currentUsers.filter(user => {
+        const isDisabled = user.disabled === 'true';
+        const statusMatch = (status === '') || (status === 'active' && !isDisabled) || (status === 'disabled' && isDisabled);
+        const profileMatch = (profile === '') || (user.profile === profile);
+        
+        // Robust handling for searchMatch
+        const userNameString = typeof user.name === 'string' ? user.name : '';
+        const userCommentString = typeof user.comment === 'string' ? user.comment : '';
+        // 'search' is already toLowerCase() from where it's defined.
+        const searchMatch = (userNameString.toLowerCase().includes(search) || 
+                             (user.comment && userCommentString.toLowerCase().includes(search)));
+        return statusMatch && profileMatch && searchMatch;
+    });
+    
+    const tbody = document.querySelector('#usersTable tbody');
+    if (filtered.length === 0) {
+        const emptyHTML = `
+            <tr class="empty-state-row">
+                <td colspan="9" class="empty-state-td">
+                    <div class="empty-state-container">
+                        <div class="empty-state-icon"><i class="fas fa-users-slash"></i></div>
+                        <h5 class="empty-state-title">No Users Match Your Criteria</h5>
+                        <p class="empty-state-text">Try adjusting your search or filter settings to find what you're looking for.</p>
+                    </div>
+                </td>
+            </tr>`;
+        tbody.innerHTML = emptyHTML;
+        return;
+    }
+
+    tbody.innerHTML = filtered.map(user => `
+        <tr>
+            <td>${user.name}</td>
+            <td>${user.profile || ''}</td>
+            <td><span class="status-badge ${user.disabled === 'true' ? 'status-disabled' : 'status-active'}">${user.disabled === 'true' ? 'Disabled' : 'Active'}</span></td>
+            <td>${user['limit-uptime'] || 'Unlimited'}</td>
+            <td>${formatBytes(user['limit-bytes-total'])}</td>
+            <td>${user.uptime || '0s'}</td>
+            <td>${formatBytes(parseInt(user['bytes-in'] || 0) + parseInt(user['bytes-out'] || 0))}</td>
+            <td>${user.comment || ''}</td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-primary btn-sm" onclick="openUserModal('${user.name}')"><i class="fas fa-edit"></i></button>
+                <button class="btn btn-danger btn-sm" onclick="deleteUser('${user.name}')"><i class="fas fa-trash"></i></button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function displayProfiles() {
+    const tbody = document.querySelector('#profilesTable tbody');
+    if (currentProfiles.length === 0) {
+        const emptyHTML = `
+            <tr class="empty-state-row">
+                <td colspan="5" class="empty-state-td">
+                    <div class="empty-state-container">
+                        <div class="empty-state-icon"><i class="fas fa-folder-open"></i></div>
+                        <h5 class="empty-state-title">No User Profiles Found</h5>
+                        <p class="empty-state-text">Hotspot user profiles define rules like speed limits and session times. You can add them here.</p>
+                        <button class="btn btn-primary empty-state-action" onclick="openProfileModal()">
+                            <i class="fas fa-plus"></i> Add Profile
+                        </button>
+                    </div>
+                </td>
+            </tr>`;
+        tbody.innerHTML = emptyHTML;
+        return;
+    }
+    tbody.innerHTML = currentProfiles.map(p => `
+        <tr>
+            <td>${p.name}</td>
+            <td>${p['rate-limit'] || 'N/A'}</td>
+            <td>${p['session-timeout'] || 'N/A'}</td>
+            <td>${p['shared-users'] || 'N/A'}</td>
+            <td style="white-space:nowrap;">
+                 <button class="btn btn-primary btn-sm" onclick="openProfileModal('${p['.id']}')"><i class="fas fa-edit"></i></button>
+                 <button class="btn btn-danger btn-sm" onclick="deleteProfile('${p['.id']}', '${p.name}')"><i class="fas fa-trash"></i></button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+// --- Event Handlers & Actions ---
+async function handleConfigSave(e) {
+    e.preventDefault();
+    const payload = {
+        mikrotik: {
+            host: document.getElementById('routerHost').value,
+            port: parseInt(document.getElementById('routerPort').value),
+            username: document.getElementById('routerUsername').value,
+            hotspot_login_url: document.getElementById('hotspotLoginUrl').value
+        }
+    };
+    const password = document.getElementById('routerPassword').value;
+    if (password) payload.mikrotik.password = password;
+
+    const result = await apiCall('/config', { method: 'POST', body: JSON.stringify(payload) });
+    if(result) {
+        showAlert('globalAlert', 'success', 'Configuration saved! Testing new connection...');
+        await checkConnection();
+    }
+}
+
+async function handleCreateUser(e) {
+    e.preventDefault();
+    const payload = {
+        name: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+        profile: document.getElementById('profile').value,
+        'limit-uptime': document.getElementById('timeLimit').value,
+        'limit-bytes-total': document.getElementById('dataLimit').value ? parseInt(document.getElementById('dataLimit').value) * 1024 * 1024 : null,
+        comment: document.getElementById('comment').value,
+    };
+    const result = await apiCall('/users', { method: 'POST', body: JSON.stringify(payload) });
+    if(result && result.success) {
+        showAlert('globalAlert', 'success', 'User created successfully!');
+        e.target.reset();
+        await loadUsers();
+        await loadDashboardStats();
+    }
+}
+
+async function handleBulkCreateUsers(e) {
+    e.preventDefault();
+    const form = e.target;
+    const payload = {
+        number_of_users: parseInt(document.getElementById('bulkNumberOfUsers').value),
+        profile: document.getElementById('bulkProfile').value,
+        'limit-uptime': document.getElementById('bulkTimeLimit').value || null,
+        'limit-bytes-total': document.getElementById('bulkDataLimit').value ? parseInt(document.getElementById('bulkDataLimit').value) * 1024 * 1024 : null,
+        comment_prefix: document.getElementById('bulkCommentPrefix').value, // This is the batch name/comment
+        username_prefix: document.getElementById('bulkUsernamePrefix').value,
+        username_length: parseInt(document.getElementById('bulkUsernameLength').value),
+        username_charset: document.getElementById('bulkUsernameCharset').value,
+        password_length: parseInt(document.getElementById('bulkPasswordLength').value),
+        password_charset: document.getElementById('bulkPasswordCharset').value
+    };
+
+    const exportHTMLBtn = document.getElementById('exportVouchersHTMLButton');
+    const exportPDFBtn = document.getElementById('exportVouchersPDFButton'); 
+    const resultDisplayDiv = document.getElementById('bulkCreateResultDisplay');
+    const credentialsTextArea = document.getElementById('bulkCreateCredentials');
+
+    // Always hide buttons and result display initially on new submission
+    if(exportHTMLBtn) exportHTMLBtn.style.display = 'none';
+    if(exportPDFBtn) exportPDFBtn.style.display = 'none';
+    resultDisplayDiv.style.display = 'none';
+    credentialsTextArea.value = '';
+    lastGeneratedBatchCredentials = []; // Clear previous batch
+
+
+    const result = await apiCall('/bulk-create-users', { method: 'POST', body: JSON.stringify(payload) });
+    if (result) {
+        showAlert('globalAlert', result.success ? 'success' : 'danger', result.message);
+        if (result.created_credentials && result.created_credentials.length > 0) {
+            lastGeneratedBatchCredentials = result.created_credentials; // Store for printing/viewing
+            resultDisplayDiv.style.display = 'block';
+            credentialsTextArea.value = result.created_credentials
+                .map(c => `Username: ${c.username}\tPassword: ${c.password}`)
+                .join('\n');
+            if(exportHTMLBtn) exportHTMLBtn.style.display = 'inline-flex'; 
+            if(exportPDFBtn) exportPDFBtn.style.display = 'inline-flex'; 
+            await loadUsers(); // Refresh user list as new users were added
+            await loadDashboardStats(); // Refresh stats
+        } else {
+            // Ensure buttons are hidden if no credentials or error
+            if(exportHTMLBtn) exportHTMLBtn.style.display = 'none';
+            if(exportPDFBtn) exportPDFBtn.style.display = 'none';
+        }
+    } else {
+        // If apiCall returns null (e.g. network error), ensure buttons and results area are hidden
+        if(exportHTMLBtn) exportHTMLBtn.style.display = 'none';
+        if(exportPDFBtn) exportPDFBtn.style.display = 'none';
+        resultDisplayDiv.style.display = 'none'; 
+    }
+}
+
+async function handleEditUser(e) {
+    e.preventDefault();
+    const username = document.getElementById('editUsernameOrig').value;
+    const payload = {
+        profile: document.getElementById('editProfile').value,
+        'limit-uptime': document.getElementById('editTimeLimit').value,
+        'limit-bytes-total': document.getElementById('editDataLimit').value ? parseInt(document.getElementById('editDataLimit').value) * 1024 * 1024 : null,
+        comment: document.getElementById('editComment').value,
+        disabled: document.getElementById('editDisabled').checked,
+    };
+    const password = document.getElementById('editPassword').value;
+    if (password) payload.password = password;
+
+    const result = await apiCall(`/users/${username}`, { method: 'PUT', body: JSON.stringify(payload) });
+    if(result && result.success) {
+        showAlert('globalAlert', 'success', 'User updated successfully!');
+        closeModal('userModal');
+        await loadUsers();
+    }
+}
+
+async function handleProfileSave(e) {
+    e.preventDefault();
+    const profileId = document.getElementById('profileId').value;
+    const payload = {
+        name: document.getElementById('profileName').value,
+        'rate-limit': document.getElementById('profileRateLimit').value,
+        'session-timeout': document.getElementById('profileSessionTimeout').value,
+        'shared-users': document.getElementById('profileSharedUsers').value,
+    };
+    
+    const url = profileId ? `/profiles/${profileId}` : '/profiles';
+    const method = profileId ? 'PUT' : 'POST';
+
+    const result = await apiCall(url, { method, body: JSON.stringify(payload) });
+    if (result && result.success) {
+        showAlert('globalAlert', 'success', `Profile ${profileId ? 'updated' : 'created'} successfully!`);
+        closeModal('profileModal');
+        await loadProfiles();
+    }
+}
+
+async function deleteUser(username) {
+    if (!confirm(`Are you sure you want to delete user "${username}"?`)) return;
+    const result = await apiCall(`/users/${username}`, { method: 'DELETE' });
+    if(result && result.success) {
+        showAlert('globalAlert', 'success', `User "${username}" deleted.`);
+        await loadUsers();
+        await loadDashboardStats();
+    }
+}
+
+async function disconnectUser(activeId) {
+    const session = currentSessions.find(s => s['.id'] === activeId);
+    if (!confirm(`Are you sure you want to disconnect user "${session.user}"?`)) return;
+    const result = await apiCall(`/disconnect-user/${activeId}`, { method: 'POST' });
+    if (result && result.success) {
+        showAlert('globalAlert', 'success', `User disconnected.`);
+        await loadActiveSessions();
+        await loadDashboardStats();
+    }
+}
+
+async function deleteProfile(id, name) {
+    if (!confirm(`Are you sure you want to delete profile "${name}"? This cannot be undone.`)) return;
+    const result = await apiCall(`/profiles/${id}`, { method: 'DELETE' });
+    if (result && result.success) {
+        showAlert('globalAlert', 'success', `Profile "${name}" deleted.`);
+        await loadProfiles();
+    }
+}
+
+async function deleteExpiredUsers() {
+    if (!confirm(getTranslation('confirmDeleteExpiredUsers'))) return;
+    const result = await apiCall('/delete-expired-users', { method: 'POST' });
+    if(result && result.success) {
+        showAlert('globalAlert', 'success', result.message + (result.deleted_count ? ` Deleted ${result.deleted_count} user(s).` : ''));
+        await loadUsers();
+        await loadDashboardStats();
+    } else if (result) { // API call was made, but operation wasn't successful (e.g. success:false from backend)
+        showAlert('globalAlert', 'warning', result.message || getTranslation('Operation failed, no users deleted.'));
+    }
+    // If result is null (apiCall failed due to network etc.), apiCall itself shows an alert.
+}
+
+async function handleDeleteUsersByProfile() {
+    const profileSelect = document.getElementById('deleteByProfileSelect');
+    const profileName = profileSelect.value;
+
+    if (!profileName) {
+        showAlert('globalAlert', 'warning', getTranslation('Please select a profile to delete users from.'));
+        return;
+    }
+
+    if (!confirm(getTranslation('Are you sure you want to delete ALL users from profile "{0}"? This action cannot be undone and is permanent.').replace('{0}', profileName))) {
+        return;
+    }
+
+    const result = await apiCall(`/users/delete-by-profile/${encodeURIComponent(profileName)}`, { method: 'DELETE' });
+
+    if (result && result.success) {
+        // Assuming result.message is already translated by the backend
+        showAlert('globalAlert', 'success', result.message || getTranslation('Successfully processed users for profile {0}. Deleted {1} user(s).', profileName, result.deleted_count));
+        await loadUsers();
+        await loadDashboardStats();
+    } else if (result) { 
+        showAlert('globalAlert', 'danger', result.message || getTranslation('Failed to delete users from profile {0}.', profileName));
+    }
+}
+
+async function handleDeleteUsersByStatus() {
+    const statusSelect = document.getElementById('deleteByStatusSelect');
+    const status = statusSelect.value; // 'active' or 'disabled'
+
+    if (!status) {
+        showAlert('globalAlert', 'warning', getTranslation('Please select a user status to delete.'));
+        return;
+    }
+    
+    const statusText = status === 'disabled' ? getTranslation('Disabled') : getTranslation('Active');
+
+    if (!confirm(getTranslation('Are you sure you want to delete all {0} users? This action cannot be undone and is permanent.').replace('{0}', statusText))) {
+        return;
+    }
+
+    const result = await apiCall(`/users/delete-by-active-status/${status}`, { method: 'DELETE' });
+
+    if (result && result.success) {
+        showAlert('globalAlert', 'success', result.message || getTranslation('Successfully processed {0} users. Deleted {1} user(s).', statusText, result.deleted_count));
+        await loadUsers();
+        await loadDashboardStats();
+    } else if (result) {
+        showAlert('globalAlert', 'danger', result.message || getTranslation('Failed to delete {0} users.', statusText));
+    }
+}
+
+function triggerExport(format) {
+    const profileFilter = document.getElementById('exportProfileFilter').value;
+    let url = `${API_BASE_URL}/api/export-users?format=${format}`;
+    if (profileFilter) {
+        url += `&profile_filter=${encodeURIComponent(profileFilter)}`;
+    }
+    window.open(url, '_blank');
+}
+
+async function testConnection() {
+    const button = event.target;
+    button.innerHTML = '<span class="loading-spinner"></span> Testing...';
+    button.disabled = true;
+    await checkConnection();
+    button.innerHTML = '<i class="fas fa-plug"></i> Test';
+    button.disabled = false;
+}
+
+// --- Modals & UI Helpers ---
+function openUserModal(username) {
+    const user = currentUsers.find(u => u.name === username);
+    if (!user) return;
+    
+    document.getElementById('editUsernameOrig').value = user.name;
+    document.getElementById('editUsernameDisplay').textContent = user.name;
+    document.getElementById('editPassword').value = '';
+    document.getElementById('editProfile').value = user.profile;
+    document.getElementById('editTimeLimit').value = user['limit-uptime'] || '';
+    document.getElementById('editDataLimit').value = user['limit-bytes-total'] ? parseInt(user['limit-bytes-total']) / 1024 / 1024 : '';
+    document.getElementById('editComment').value = user.comment || '';
+    document.getElementById('editDisabled').checked = user.disabled === 'true';
+
+    document.getElementById('userModal').style.display = 'block';
+}
+
+function openProfileModal(profileId = null) {
+    const form = document.getElementById('profileForm');
+    form.reset();
+    document.getElementById('profileId').value = '';
+    
+    if (profileId) {
+        const profile = currentProfiles.find(p => p['.id'] === profileId);
+        if (profile) {
+            document.getElementById('profileModalTitle').textContent = `Edit Profile: ${profile.name}`;
+            document.getElementById('profileId').value = profile['.id'];
+            document.getElementById('profileName').value = profile.name;
+            document.getElementById('profileRateLimit').value = profile['rate-limit'] || '';
+            document.getElementById('profileSessionTimeout').value = profile['session-timeout'] || '';
+            document.getElementById('profileSharedUsers').value = profile['shared-users'] || '';
+        }
+    } else {
+        document.getElementById('profileModalTitle').textContent = 'Add New Profile';
+    }
+    document.getElementById('profileModal').style.display = 'block';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+window.onclick = function(event) {
+    if (event.target.classList.contains('modal')) {
+        event.target.style.display = 'none';
+    }
+}
+
+function showAlert(elementId, type, message) {
+    const alert = document.getElementById(elementId);
+    if (!alert) return;
+    alert.className = `alert alert-${type}`;
+    alert.innerHTML = message;
+    alert.style.display = 'block';
+    setTimeout(() => { alert.style.display = 'none'; }, 5000);
+}
+
+let spinnerTimeout;
+function showGlobalSpinner(show) {
+    const statusEl = document.getElementById('connectionStatus');
+    if (!statusEl) return;
+
+    clearTimeout(spinnerTimeout);
+    if (show) {
+        statusEl.innerHTML = '<span class="loading-spinner"></span>';
+    } else {
+        // Delay hiding spinner to prevent flickering on fast calls
+        spinnerTimeout = setTimeout(() => {
+            if (statusEl.innerHTML.includes('spinner')) {
+                // If it's still a spinner, default to disconnected
+                statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> Disconnected</span>`;
+                statusEl.className = 'disconnected';
+            }
+        }, 250);
+    }
+}
+
+// --- Analytics Tab Specific Functions ---
+async function loadAnalyticsData() {
+    logger.info("Loading analytics data...");
+    const totalDataEl = document.getElementById('analyticsTotalData');
+    if (totalDataEl) totalDataEl.textContent = 'Total Data Transferred: Loading...';
+    
+    const data = await apiCall('/analytics/basic_summary');
+    if (!data) {
+        if(totalDataEl) totalDataEl.textContent = 'Total Data Transferred: Error loading data';
+        return;
+    }
+    
+    if (totalDataEl) totalDataEl.textContent = 'Total Data Transferred: ' + formatBytes(data.total_data_all_users);
+
+    const profileChartEmptyState = document.getElementById('profileUsageChartEmptyState');
+    const topUsersChartEmptyState = document.getElementById('topUsersChartEmptyState');
+
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const labelColor = isDarkMode ? getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() : getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim();
+    const tooltipBgColor = isDarkMode ? '#2c3e50' : '#fff';
+    const tooltipTitleColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+    const tooltipBodyColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+    
+    // Render Profile Usage Chart (Pie)
+    const profileCtx = document.getElementById('profileUsageChart').getContext('2d');
+    if (profileUsageChartInstance) {
+        profileUsageChartInstance.destroy();
+    }
+    const profileData = data.data_usage_by_profile || {};
+    const totalProfileUsage = Object.values(profileData).reduce((sum, val) => sum + val, 0);
+
+    // Enhanced color palette for Pie chart - works well on light/dark
+    const pieChartColors = [
+        '#1abc9c', '#3498db', '#9b59b6', '#f1c40f', '#e74c3c', 
+        '#2ecc71', '#e67e22', '#34495e', '#7f8c8d', '#16a085',
+        '#2980b9', '#8e44ad', '#f39c12', '#c0392b', '#27ae60' 
+    ];
+
+    if (Object.keys(profileData).length === 0) {
+        profileChartEmptyState.style.display = 'flex'; // Show empty state
+    } else {
+        profileChartEmptyState.style.display = 'none'; // Hide empty state
+        profileUsageChartInstance = new Chart(profileCtx, {
+            type: 'pie',
+            data: {
+                labels: Object.keys(profileData),
+                datasets: [{
+                    label: 'Data Usage',
+                    data: Object.values(profileData),
+                    backgroundColor: pieChartColors,
+                    hoverOffset: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        labels: { color: labelColor },
+                        onClick: (e, legendItem, legend) => { // Default behavior + update
+                            Chart.defaults.plugins.legend.onClick(e, legendItem, legend);
+                            // Could add custom logic here if needed after a legend item click
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: tooltipBgColor,
+                        titleColor: tooltipTitleColor,
+                        bodyColor: tooltipBodyColor,
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = context.parsed || 0;
+                                const percentage = totalProfileUsage > 0 ? ((value / totalProfileUsage) * 100).toFixed(1) : 0;
+                                return `${label}: ${formatBytes(value)} (${percentage}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Render Top 10 Users Chart (Bar)
+    const topUsersCtx = document.getElementById('topUsersChart').getContext('2d');
+    if (topUsersChartInstance) {
+        topUsersChartInstance.destroy();
+    }
+    const topUsers = data.all_users_sorted_by_data ? data.all_users_sorted_by_data.slice(0, 10) : [];
+    if (topUsers.length === 0) {
+        topUsersChartEmptyState.style.display = 'flex'; 
+    } else {
+        topUsersChartEmptyState.style.display = 'none'; 
+        topUsersChartInstance = new Chart(topUsersCtx, {
+            type: 'bar',
+            data: {
+                labels: topUsers.map(u => u.name),
+                datasets: [{
+                    label: 'Total Data Usage',
+                    data: topUsers.map(u => u.total_data), // Assuming topUsers elements have bytes_in, bytes_out
+                    bytesIn: topUsers.map(u => u.bytes_in || 0), // Store for tooltip
+                    bytesOut: topUsers.map(u => u.bytes_out || 0), // Store for tooltip
+                    backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#1abc9c',
+                    hoverBackgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--primary-color-darker').trim() || '#16a085'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: gridColor },
+                        ticks: { 
+                            color: labelColor,
+                            callback: function(value) { return formatBytes(value); } 
+                        }
+                    },
+                    x: {
+                        grid: { display: false }, // Often X grid is not needed for bar charts
+                        ticks: { color: labelColor }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: { color: labelColor }
+                    },
+                    tooltip: {
+                        backgroundColor: tooltipBgColor,
+                        titleColor: tooltipTitleColor,
+                        bodyColor: tooltipBodyColor,
+                        callbacks: {
+                            label: function(context) {
+                                const dataset = context.dataset;
+                                const index = context.dataIndex;
+                                const totalUsage = formatBytes(dataset.data[index]);
+                                const bytesIn = formatBytes(dataset.bytesIn[index]);
+                                const bytesOut = formatBytes(dataset.bytesOut[index]);
+                                
+                                let tooltipLines = [`Total: ${totalUsage}`];
+                                tooltipLines.push(`In: ${bytesIn} / Out: ${bytesOut}`);
+                                return tooltipLines;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+// Listen for theme changes to update chart options and re-render
+document.addEventListener('themeChanged', function(e) {
+    if (analyticsDataLoaded && document.getElementById('analytics').classList.contains('active')) {
+        const isDark = document.body.classList.contains('dark-mode');
+        const newGridColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+        const newLabelColor = isDark ? 
+            getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() : 
+            getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim();
+        const newTooltipBgColor = isDark ? '#2c3e50' : '#fff';
+        const newTooltipTitleColor = isDark ? '#ecf0f1' : '#2c3e50';
+        const newTooltipBodyColor = isDark ? '#ecf0f1' : '#2c3e50';
+
+        if (profileUsageChartInstance) {
+            profileUsageChartInstance.options.plugins.legend.labels.color = newLabelColor;
+            profileUsageChartInstance.options.plugins.tooltip.backgroundColor = newTooltipBgColor;
+            profileUsageChartInstance.options.plugins.tooltip.titleColor = newTooltipTitleColor;
+            profileUsageChartInstance.options.plugins.tooltip.bodyColor = newTooltipBodyColor;
+            profileUsageChartInstance.update();
+        }
+        if (topUsersChartInstance) {
+            topUsersChartInstance.options.scales.y.grid.color = newGridColor;
+            topUsersChartInstance.options.scales.y.ticks.color = newLabelColor;
+            topUsersChartInstance.options.scales.x.ticks.color = newLabelColor;
+            topUsersChartInstance.options.plugins.legend.labels.color = newLabelColor;
+            topUsersChartInstance.options.plugins.tooltip.backgroundColor = newTooltipBgColor;
+            topUsersChartInstance.options.plugins.tooltip.titleColor = newTooltipTitleColor;
+            topUsersChartInstance.options.plugins.tooltip.bodyColor = newTooltipBodyColor;
+            topUsersChartInstance.update();
+        }
+    }
+});
+
+
+function formatBytes(bytes) {
+    if (bytes === null || bytes === undefined || bytes === '' || isNaN(bytes)) return 'Unlimited';
+    const numBytes = Number(bytes);
+    if (numBytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(numBytes) / Math.log(k));
+    return `${parseFloat((numBytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+// --- Historical Analytics Functions ---
+async function loadHistoricalAnalytics() {
+    const startDate = document.getElementById('historicalStartDate').value;
+    const endDate = document.getElementById('historicalEndDate').value;
+    const interval = document.getElementById('historicalInterval').value;
+
+    if (!startDate || !endDate) {
+        showAlert('globalAlert', 'warning', 'Please select both a start and end date.');
+        return;
+    }
+    logger.info(`Loading historical data from ${startDate} to ${endDate}, interval: ${interval}`);
+
+    // Fetch and render historical usage
+    const usageData = await apiCall(`/analytics/historical_usage?start_date=${startDate}&end_date=${endDate}&interval=${interval}`);
+    renderHistoricalUsageChart(usageData ? usageData.data : []);
+
+    // Fetch and render historical peak users
+    const peakUsersData = await apiCall(`/analytics/historical_peak_users?start_date=${startDate}&end_date=${endDate}&interval=${interval}`);
+    renderHistoricalPeakUsersChart(peakUsersData ? peakUsersData.data : []);
+}
+
+function renderHistoricalUsageChart(data) {
+    const ctx = document.getElementById('historicalUsageChart').getContext('2d');
+    const emptyState = document.getElementById('historicalUsageChartEmptyState');
+    if (historicalUsageChartInstance) {
+        historicalUsageChartInstance.destroy();
+    }
+
+    if (!data || data.length === 0) {
+        emptyState.style.display = 'flex';
+        return;
+    }
+    emptyState.style.display = 'none';
+    
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const labelColor = isDarkMode ? getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() : getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim();
+    const tooltipBgColor = isDarkMode ? '#2c3e50' : '#fff';
+    const tooltipTitleColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+    const tooltipBodyColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+
+    historicalUsageChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.map(d => d.timestamp),
+            datasets: [
+                {
+                    label: 'Total Data In',
+                    data: data.map(d => d.total_bytes_in),
+                    borderColor: getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim(),
+                    backgroundColor: hexToRgba(getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim(), 0.1),
+                    fill: true,
+                    tension: 0.1
+                },
+                {
+                    label: 'Total Data Out',
+                    data: data.map(d => d.total_bytes_out),
+                    borderColor: getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim(),
+                    backgroundColor: hexToRgba(getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim(), 0.1),
+                    fill: true,
+                    tension: 0.1
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor, callback: value => formatBytes(value) }
+                },
+                x: { 
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor } 
+                }
+            },
+            plugins: {
+                legend: { labels: { color: labelColor } },
+                tooltip: {
+                    backgroundColor: tooltipBgColor, titleColor: tooltipTitleColor, bodyColor: tooltipBodyColor,
+                    callbacks: { label: context => `${context.dataset.label}: ${formatBytes(context.raw)}` }
+                }
+            }
+        }
+    });
+}
+
+function renderHistoricalPeakUsersChart(data) {
+    const ctx = document.getElementById('historicalPeakUsersChart').getContext('2d');
+    const emptyState = document.getElementById('historicalPeakUsersChartEmptyState');
+    if (historicalPeakUsersChartInstance) {
+        historicalPeakUsersChartInstance.destroy();
+    }
+
+    if (!data || data.length === 0) {
+        emptyState.style.display = 'flex';
+        return;
+    }
+    emptyState.style.display = 'none';
+
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const labelColor = isDarkMode ? getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() : getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim();
+    const tooltipBgColor = isDarkMode ? '#2c3e50' : '#fff';
+    const tooltipTitleColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+    const tooltipBodyColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim();
+
+
+    historicalPeakUsersChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => d.timestamp),
+            datasets: [{
+                label: 'Peak Concurrent Users',
+                data: data.map(d => d.peak_users),
+                backgroundColor: primaryColor,
+                 hoverBackgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--primary-color-darker').trim()
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: gridColor },
+                    ticks: { color: labelColor, stepSize: 1 } // Ensure y-axis shows whole numbers for users
+                },
+                x: { 
+                    grid: { display: false },
+                    ticks: { color: labelColor } 
+                }
+            },
+            plugins: {
+                legend: { labels: { color: labelColor } },
+                tooltip: {
+                     backgroundColor: tooltipBgColor, titleColor: tooltipTitleColor, bodyColor: tooltipBodyColor,
+                    callbacks: { label: context => `${context.dataset.label}: ${context.raw}` }
+                }
+            }
+        }
+    });
+}
+
+// Helper to convert hex color to rgba for chart backgrounds
+function hexToRgba(hex, alpha = 1) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+</script>
+</body>
+</html>

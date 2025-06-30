@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Hotspot Vouchers</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 5mm;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: #f4f4f9;
+            color: #333333;
+            -webkit-print-color-adjust: exact; 
+        }
+        .print-button-container {
+            text-align: center;
+            padding: 20px;
+        }
+        .print-button {
+            padding: 12px 25px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .print-button:hover {
+            background-color: #0056b3;
+        }
+        .voucher-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, 70mm);
+            gap: 8mm;
+            padding: 10mm;
+            justify-content: center;
+        }
+        .voucher {
+            width: 70mm;
+            height: 50mm;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column; 
+            page-break-inside: avoid;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .voucher-header {
+            background-color: #fff;
+            color: #2A7ABF; 
+            border-bottom: 1.5px solid #2A7ABF; 
+            padding: 5px 8px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 1.1em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .voucher-content {
+            display: flex;
+            flex-grow: 1; 
+            padding: 5px;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .voucher-qr {
+            width: 24mm;
+            height: 24mm;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 4px; 
+        }
+        .voucher-qr img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 4px;
+        }
+        .voucher-details {
+            flex-grow: 1;
+            font-size: 0.9em; 
+            color: #000000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center; 
+            gap: 4px;
+            padding-left: 8px;
+        }
+        .voucher-details p {
+            margin: 0;
+        }
+        .voucher-details strong { 
+            color: #333;
+            font-weight: 500;
+        }
+        .voucher-details span { 
+            font-family: 'Courier New', monospace;
+            color: #2A7ABF; 
+            background-color: #f0f2f5;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 1.1em; 
+            word-break: break-all; 
+        }
+        .voucher-footer { 
+            font-size: 7.5pt; 
+            color: #555; 
+            text-align: center;
+            padding: 4px 5px;
+            border-top: 1px solid #eee;
+        }
+        @media print {
+            body { 
+                margin: 0; 
+                padding: 0; 
+                background-color: #fff;
+            }
+            .print-button-container { 
+                display: none; 
+            }
+            .voucher-grid {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: flex-start;
+                align-content: flex-start;
+                gap: 0;
+                width: 100%;
+                padding: 0;
+            }
+            .voucher {
+                border: 1px dashed #999;
+                box-shadow: none;
+                border-radius: 0;
+                margin: 2mm;
+            }
+        }
+    </style>
+</head>
+<body>
+    {% if include_print_button %}
+    <div class="print-button-container">
+        <button class="print-button" onclick="window.print();">🖨️ Print Vouchers</button>
+    </div>
+    {% endif %}
+    <div class="voucher-grid">
+    {% for voucher in vouchers %}
+        <div class="voucher">
+            <div class="voucher-header">
+            {% if logo_data_url %}
+                <img src="{{ logo_data_url }}" alt="Logo" style="max-height: 16px; margin-right: 8px; vertical-align: middle;">
+            {% endif %}
+                Hotspot Voucher
+            </div>
+            <div class="voucher-content">
+                <div class="voucher-qr">
+                {% if voucher.qr_code_b64 %}
+                    <img src="data:image/png;base64,{{ voucher.qr_code_b64 }}" alt="QR Code for {{ voucher.username }}">
+                {% else %}
+                    <div style="font-size:0.8em; color:#aaa; text-align:center;">QR Not Available</div>
+                {% endif %}
+                </div>
+                <div class="voucher-details">
+                    <p><strong>Username:</strong></p>
+                    <p><span>{{ voucher.username }}</span></p>
+                    <p><strong>Password:</strong></p>
+                    <p><span>{{ voucher.password }}</span></p>
+                    <p><strong>Time Limit:</strong></p>
+                    <p><span>{{ voucher.time_limit_display }}</span></p>
+                </div>
+            </div>
+            <div class="voucher-footer">{{ contact_info_line1 | safe }} | {{ contact_info_line2 | safe }}</div>
+        </div>
+    {% endfor %}
+    </div>
+</body>
+</html>
