@@ -1537,6 +1537,7 @@ def update_config_route():
 @app.route('/api/admin/change-password', methods=['POST'])
 @login_required
 def change_admin_password():
+    global app_config # Declare app_config as global at the beginning of the function
     data = request.json
     current_password = data.get('current_password')
     new_password = data.get('new_password')
@@ -1565,7 +1566,7 @@ def change_admin_password():
         if updated:
             # Reload app_config to reflect the change immediately for the current session if needed,
             # though for password hash it's mainly for next logins.
-            global app_config
+            # global app_config # This was the problematic duplicate
             app_config = config_loader.get_config()
             logger.info(f"Admin password changed successfully for user '{admin_username}'.")
             return jsonify({'success': True, 'message': _('Admin password changed successfully.')})
