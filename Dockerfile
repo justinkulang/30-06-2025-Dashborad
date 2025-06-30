@@ -26,7 +26,8 @@ WORKDIR /app
 # Install pip dependencies
 # Copy only requirements.txt first to leverage Docker cache
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /wheels -r requirements.txt
+# Removed --no-deps to ensure all dependency wheels are downloaded
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 
 # --- Final Stage ---
