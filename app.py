@@ -1,6 +1,6 @@
 """Mikrotik Hotspot User Management Backend - v2
 Major overhaul with a redesigned UI, profile management, filtered exports, QR codes, and more."""
-from flask import Flask, render_template, request, jsonify, send_from_directory, g, redirect, url_for, session # Add session
+from flask import Flask, render_template, request, jsonify, g, redirect, url_for, session # Add session
 from flask_cors import CORS
 from flask_babel import Babel, get_locale, _ # Re-add get_locale
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -72,8 +72,10 @@ CORS(app)
 # Session management
 SECRET_KEY_FALLBACK = "a_very_secret_and_stable_key_for_development_do_not_use_in_prod"
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', SECRET_KEY_FALLBACK)
-if app.config['SECRET_KEY'] == SECRET_KEY_FALLBACK:
-    logger.warning("WARNING: FLASK_SECRET_KEY environment variable not set. Using a default, insecure key for development. SET THIS VARIABLE IN PRODUCTION!")
+
+# app_config is not available here yet. This check needs to be done after app_config is loaded.
+# We will move this check to after app_config initialization.
+
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30) # Example: 30 minutes timeout
 
 # Initialize Flask-Login
@@ -208,10 +210,39 @@ class ConfigLoader:
             json.dump(self.config, f, indent=4)
         logger.info("Mikrotik configuration has been reset to defaults.")
 
+    def update_admin_credentials(self, new_password_hash=None, new_username=None):
+        """Safely updates admin username and/or password hash in the configuration."""
+        updated = False
+        if new_username and self.config['app_admin'].get('username') != new_username:
+            self.config['app_admin']['username'] = new_username
+            logger.info(f"Admin username updated to: {new_username}")
+            updated = True
+        if new_password_hash and self.config['app_admin'].get('password_hash') != new_password_hash:
+            self.config['app_admin']['password_hash'] = new_password_hash
+            logger.info("Admin password hash updated.")
+            updated = True
+
+        if updated:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.config, f, indent=4)
+            logger.info("Admin credentials saved to configuration file.")
+        return updated
+
 
 # Initialize ConfigLoader
 config_loader = ConfigLoader()
 app_config = config_loader.get_config()
+
+# Enhanced SECRET_KEY check after app_config is loaded
+if app.config['SECRET_KEY'] == SECRET_KEY_FALLBACK:
+    if not app_config.get('server', {}).get('debug', False): # If debug is False (production-like)
+        logger.error("CRITICAL SECURITY WARNING: FLASK_SECRET_KEY is not set and the application is NOT in debug mode. "
+                     "Using the default, insecure key in a production environment is highly dangerous. "
+                     "The application may be vulnerable to session hijacking and other attacks. "
+                     "SET THE FLASK_SECRET_KEY ENVIRONMENT VARIABLE IMMEDIATELY using a strong, random value.")
+    else: # Debug mode is True or not set (defaults to False but let's be explicit for the warning)
+        logger.warning("WARNING: FLASK_SECRET_KEY environment variable not set. Using a default, insecure key for development. "
+                       "Ensure this is set for any production deployment.")
 
 # Set SQLAlchemy Database URI from loaded config
 app.config['SQLALCHEMY_DATABASE_URI'] = app_config.get('database', {}).get('uri', f"sqlite:///{os.path.join(get_base_path(), 'hotspot_analytics_fallback.db')}")
@@ -1503,6 +1534,50 @@ def update_config_route():
     config_loader.update_config(data)
     return jsonify({'success': True, 'message': 'Configuration updated and saved.'})
 
+@app.route('/api/admin/change-password', methods=['POST'])
+@login_required
+def change_admin_password():
+    data = request.json
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+    confirm_password = data.get('confirm_password')
+
+    if not all([current_password, new_password, confirm_password]):
+        return jsonify({'success': False, 'message': _('All password fields are required.')}), 400
+
+    if new_password != confirm_password:
+        return jsonify({'success': False, 'message': _('New passwords do not match.')}), 400
+
+    if len(new_password) < 8: # Example: Enforce minimum password length
+        return jsonify({'success': False, 'message': _('New password must be at least 8 characters long.')}), 400
+
+    admin_username = app_config.get('app_admin', {}).get('username')
+    current_hash = app_config.get('app_admin', {}).get('password_hash')
+
+    if not check_password_hash(current_hash, current_password):
+        return jsonify({'success': False, 'message': _('Current password is incorrect.')}), 401 # Unauthorized
+
+    new_hash = generate_password_hash(new_password)
+
+    try:
+        # Use the new method in ConfigLoader
+        updated = config_loader.update_admin_credentials(new_password_hash=new_hash)
+        if updated:
+            # Reload app_config to reflect the change immediately for the current session if needed,
+            # though for password hash it's mainly for next logins.
+            global app_config
+            app_config = config_loader.get_config()
+            logger.info(f"Admin password changed successfully for user '{admin_username}'.")
+            return jsonify({'success': True, 'message': _('Admin password changed successfully.')})
+        else:
+            # This case should ideally not be hit if logic is correct (e.g. hash is actually different)
+            logger.warning("Admin password change requested, but new hash was same as old or not updated.")
+            return jsonify({'success': False, 'message': _('Password not changed. New password might be the same as old.')})
+    except Exception as e:
+        logger.error(f"Error saving new admin password hash to config: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': _('Could not save new password due to a server error.')}), 500
+
+
 @app.route('/api/dashboard-stats', methods=['GET'])
 @login_required
 def get_dashboard_stats():
@@ -1529,6 +1604,14 @@ def create_user():
     if not username or not password:
         return jsonify({'success': False, 'message': _('Username and password are required.')}), 400
     
+    # Validate 'limit-bytes-total' if present
+    if 'limit-bytes-total' in data and data['limit-bytes-total'] is not None:
+        try:
+            # Ensure it's an integer. The frontend sends it already multiplied (bytes).
+            int(data['limit-bytes-total'])
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': _('Invalid Data Limit. Must be a whole number of bytes.')}), 400
+
     success, message = router_os_service.create_hotspot_user(data)
     return jsonify({'success': success, 'message': message}) # Assuming router_os_service returns translated messages or they are generic
 
@@ -1568,6 +1651,13 @@ def bulk_create_users():
     base_user_data_keys = ['profile', 'limit-uptime', 'limit-bytes-total', 'server']
     base_user_data = {k: data[k] for k in base_user_data_keys if k in data and data[k]}
 
+    # Validate 'limit-bytes-total' in base_user_data if present
+    if 'limit-bytes-total' in base_user_data and base_user_data['limit-bytes-total'] is not None:
+        try:
+            # Ensure it's an integer. The frontend sends it already multiplied (bytes).
+            int(base_user_data['limit-bytes-total'])
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': _('Invalid Data Limit for batch. Must be a whole number of bytes.')}), 400
 
     created_credentials = []
     errors = []
@@ -1609,6 +1699,14 @@ def edit_user(username: str):
     data = request.json
     if 'disabled' in data:
         data['disabled'] = 'true' if data['disabled'] else 'false'
+
+    # Validate 'limit-bytes-total' if present
+    if 'limit-bytes-total' in data and data['limit-bytes-total'] is not None:
+        try:
+            # Ensure it's an integer. The frontend sends it already multiplied (bytes).
+            int(data['limit-bytes-total'])
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': _('Invalid Data Limit. Must be a whole number of bytes.')}), 400
 
     success, message = router_os_service.edit_hotspot_user(username, data)
     return jsonify({'success': success, 'message': message})
@@ -2027,8 +2125,34 @@ def get_translations():
         'Successfully processed users for profile {0}. Deleted {1} user(s).': _('Successfully processed users for profile {0}. Deleted {1} user(s).'),
         'Failed to delete users from profile {0}.': _('Failed to delete users from profile {0}.'),
         'Successfully processed {0} users. Deleted {1} user(s).': _('Successfully processed {0} users. Deleted {1} user(s).'),
-        'Failed to delete {0} users.': _('Failed to delete {0} users.')
+        'Failed to delete {0} users.': _('Failed to delete {0} users.'),
 
+        # Admin Password Change Feature
+        'Change Admin Password': _('Change Admin Password'),
+        'Current Password': _('Current Password'),
+        'New Password': _('New Password'),
+        'Confirm New Password': _('Confirm New Password'),
+        'Change Password': _('Change Password'),
+        'All password fields are required.': _('All password fields are required.'),
+        'New passwords do not match.': _('New passwords do not match.'),
+        'New password must be at least 8 characters long.': _('New password must be at least 8 characters long.'),
+        'Current password is incorrect.': _('Current password is incorrect.'),
+        'Admin password changed successfully.': _('Admin password changed successfully.'),
+        'Admin password changed successfully. You may need to log in again with your new password if your session is invalidated.': _('Admin password changed successfully. You may need to log in again with your new password if your session is invalidated.'),
+
+        # Persistent connection error messages
+        'Network error or server is unreachable. Please check your connection and the server status. You may need to <a href="#" onclick="navigateToTab(\'settings\'); return false;">reconfigure settings</a> or refresh the page.': _('Network error or server is unreachable. Please check your connection and the server status. You may need to <a href="#" onclick="navigateToTab(\'settings\'); return false;">reconfigure settings</a> or refresh the page.'),
+        'Network Error': _('Network Error'),
+        'An unexpected error occurred.': _('An unexpected error occurred.'),
+
+        # Input Validation Messages
+        'Invalid Data Limit. Must be a whole number of bytes.': _('Invalid Data Limit. Must be a whole number of bytes.'),
+        'Invalid Data Limit for batch. Must be a whole number of bytes.': _('Invalid Data Limit for batch. Must be a whole number of bytes.'),
+
+        # Feature availability messages
+        'PDF export is not available. Server may be missing dependencies.': _('PDF export is not available. Server may be missing dependencies.'),
+        '(PDF export disabled)': _('(PDF export disabled)'),
+        'PDF voucher export is not available. Server may be missing dependencies.': _('PDF voucher export is not available. Server may be missing dependencies.')
     }
     return jsonify(translations)
 
@@ -2068,18 +2192,44 @@ if __name__ == '__main__':
                 current_config = config_loader.get_config()
                 mikrotik_cfg = current_config['mikrotik']
                 temp_api = None
-                try:
-                    temp_api = librouteros.connect(
-                        host=mikrotik_cfg['host'], 
-                        username=mikrotik_cfg['username'], 
-                        password=mikrotik_cfg['password'], 
-                        port=mikrotik_cfg['port'], 
-                        ssl=mikrotik_cfg.get('use_ssl', False)
-                    )
-                    logger.info("Scheduler: Successfully connected to Mikrotik for data logging.")
-                except Exception as api_conn_e:
-                    logger.error(f"Scheduler: Failed to connect to Mikrotik for data logging: {api_conn_e}")
-                    return # Exit job if no connection
+                connection_attempts = 3
+                attempt_delay_seconds = 10
+
+                for attempt in range(connection_attempts):
+                    try:
+                        logger.info(f"Scheduler: Attempting to connect to Mikrotik (Attempt {attempt + 1}/{connection_attempts})...")
+                        temp_api = librouteros.connect(
+                            host=mikrotik_cfg['host'],
+                            username=mikrotik_cfg['username'],
+                            password=mikrotik_cfg['password'],
+                            port=mikrotik_cfg['port'],
+                            ssl=mikrotik_cfg.get('use_ssl', False),
+                            timeout=10 # Add a connection timeout
+                        )
+                        logger.info("Scheduler: Successfully connected to Mikrotik for data logging.")
+                        break # Exit loop on successful connection
+                    except (librouteros.exceptions.LibRouterosError, socket.error, ConnectionRefusedError, OSError) as api_conn_e:
+                        logger.warning(f"Scheduler: Connection attempt {attempt + 1} failed: {api_conn_e}")
+                        if attempt < connection_attempts - 1:
+                            logger.info(f"Scheduler: Retrying in {attempt_delay_seconds} seconds...")
+                            import time # Import time module for sleep
+                            time.sleep(attempt_delay_seconds)
+                        else:
+                            logger.error("Scheduler: All connection attempts failed. Cannot log router data.")
+                            return # Exit job if all connection attempts fail
+                    except Exception as e: # Catch any other unexpected error during connect
+                        logger.error(f"Scheduler: Unexpected error during Mikrotik connection attempt {attempt + 1}: {e}", exc_info=True)
+                        if attempt < connection_attempts - 1:
+                             logger.info(f"Scheduler: Retrying in {attempt_delay_seconds} seconds...")
+                             import time
+                             time.sleep(attempt_delay_seconds)
+                        else:
+                            logger.error("Scheduler: All connection attempts failed due to unexpected error. Cannot log router data.")
+                            return
+
+                if not temp_api: # Should be redundant if return is hit above, but as a safeguard
+                    logger.error("Scheduler: Mikrotik API not available after retry attempts.")
+                    return
 
                 # --- Fetch Data using the temporary API connection ---
                 try:

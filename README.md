@@ -17,6 +17,7 @@ This project provides a web-based dashboard for managing Mikrotik Hotspot users,
 *   **Secure Access:**
     *   Web application login system using Flask-Login (session-based).
     *   CSRF protection for all state-changing operations using Flask-WTF.
+    *   Secure Admin Password Change: Ability to change the web application admin password via the UI.
 *   **Internationalization (i18n):** Support for multiple languages (English, Arabic, French).
 *   **Configurable:** Key settings managed via `config.json`.
 *   **Production Ready:** Includes Gunicorn configuration and guidance for HTTPS setup.
@@ -55,7 +56,8 @@ This project provides a web-based dashboard for managing Mikrotik Hotspot users,
         *   A default admin user for the web dashboard is created with credentials:
             *   Username: `admin`
             *   Password: `changeme`
-        *   **IMPORTANT:** Change this default password immediately after the first login! You can generate a new password hash using Python and Werkzeug security:
+        *   **IMPORTANT:** Change this default password immediately after the first login! This can be done via the "Settings" tab in the web application dashboard.
+        *   Alternatively, for manual updates or if direct file access is preferred, you can generate a new password hash using Python and Werkzeug security:
             ```python
             from werkzeug.security import generate_password_hash
             new_hash = generate_password_hash('your_new_strong_password')
@@ -108,7 +110,10 @@ When deploying this application to a production environment, several considerati
 ### `SECRET_KEY` Configuration
 For session security, Flask uses a `SECRET_KEY`.
 *   **Action Required:** Set the `FLASK_SECRET_KEY` environment variable to a strong, unique, and random string. Do not use the default fallback key in production.
-*   The application will use the environment variable if set, otherwise, it falls back to a hardcoded development key and issues a warning.
+*   The application will use the environment variable if set. If not set, it falls back to a hardcoded development key.
+*   If the fallback key is used:
+    *   A `WARNING` is logged if the application is in debug mode.
+    *   A more severe `ERROR` is logged if the application is NOT in debug mode, highlighting a critical security risk.
 
 ### Debug Mode
 *   **Action Required:** Ensure that `debug` is set to `false` in the `server` section of your `config.json` for production. The application now defaults this to `false` if the key is missing or a new config is generated.

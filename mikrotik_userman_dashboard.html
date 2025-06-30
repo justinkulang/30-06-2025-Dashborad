@@ -939,6 +939,25 @@
                     </div>
                 </form>
             </div>
+
+            <div class="panel">
+                <h3 class="panel-header">Change Admin Password</h3>
+                <form id="changePasswordForm">
+                    <div class="form-group">
+                        <label for="currentPassword">Current Password</label>
+                        <input type="password" id="currentPassword" required autocomplete="current-password">
+                    </div>
+                    <div class="form-group">
+                        <label for="newPassword">New Password</label>
+                        <input type="password" id="newPassword" required autocomplete="new-password">
+                    </div>
+                    <div class="form-group">
+                        <label for="confirmNewPassword">Confirm New Password</label>
+                        <input type="password" id="confirmNewPassword" required autocomplete="new-password">
+                    </div>
+                    <button type="submit" class="btn btn-danger"><i class="fas fa-key"></i> Change Password</button>
+                </form>
+            </div>
         </div>
     </main>
 
@@ -1002,6 +1021,7 @@ let currentSessions = [];
 let lastGeneratedBatchCredentials = []; // To store the last batch of generated credentials
 let analyticsDataLoaded = false; // Flag for initial analytics load
 let cachedTranslations = {}; // For storing fetched translations
+let featureFlags = { pdf_export: false, qr_codes: false }; // Store feature availability
 
 // Chart instances
 let profileUsageChartInstance;
@@ -1120,6 +1140,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('createUserForm').addEventListener('submit', handleCreateUser);
     document.getElementById('bulkCreateUserForm').addEventListener('submit', handleBulkCreateUsers);
     document.getElementById('editUserForm').addEventListener('submit', handleEditUser);
+    document.getElementById('changePasswordForm').addEventListener('submit', handleChangePassword);
     document.getElementById('profileForm').addEventListener('submit', handleProfileSave);
 
     const logoutButton = document.getElementById('logoutButton');
@@ -1344,13 +1365,59 @@ async function apiCall(endpoint, options = {}) {
         // If we reach here, response is OK and content type indicates JSON (or no content type header, assume JSON)
         return await response.json();
     } catch (error) {
-        // showAlert is already called by some specific handlers, but a generic one here might be too noisy
-        // For now, let's ensure the error is re-thrown or handled appropriately by the caller.
-        // The existing showAlert in the original catch block is fine.
-        showAlert('globalAlert', 'danger', error.message); // Keep this for now.
-        return null; // Or rethrow error depending on desired handling by callers
+        logger.error(`API Call Error to ${endpoint}:`, error); // Log the full error for debugging
+        // Check if it's a network error (fetch itself failed)
+        if (error.message.toLowerCase().includes('failed to fetch') || error.message.toLowerCase().includes('networkerror')) {
+            showPersistentConnectionMessage(getTranslation('Network error or server is unreachable. Please check your connection and the server status. You may need to <a href="#" onclick="navigateToTab(\'settings\'); return false;">reconfigure settings</a> or refresh the page.'));
+            // Also update the top connection status indicator
+            const statusEl = document.getElementById('connectionStatus');
+            if (statusEl) {
+                statusEl.className = 'disconnected';
+                statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> ${getTranslation('Network Error')}</span>`;
+            }
+        } else {
+            // For other errors (e.g., HTTP errors from server response), use the global alert
+            showAlert('globalAlert', 'danger', error.message || getTranslation('An unexpected error occurred.'));
+        }
+        return null;
     } finally {
         showGlobalSpinner(false);
+    }
+}
+
+async function handleChangePassword(e) {
+    e.preventDefault();
+    const form = e.target;
+    const currentPassword = document.getElementById('currentPassword').value;
+    const newPassword = document.getElementById('newPassword').value;
+    const confirmNewPassword = document.getElementById('confirmNewPassword').value;
+
+    if (!currentPassword || !newPassword || !confirmNewPassword) {
+        showAlert('globalAlert', 'warning', getTranslation('All password fields are required.'));
+        return;
+    }
+    if (newPassword !== confirmNewPassword) {
+        showAlert('globalAlert', 'warning', getTranslation('New passwords do not match.'));
+        return;
+    }
+    if (newPassword.length < 8) {
+        showAlert('globalAlert', 'warning', getTranslation('New password must be at least 8 characters long.'));
+        return;
+    }
+
+    const payload = { current_password: currentPassword, new_password: newPassword, confirm_password: confirmNewPassword };
+    const result = await apiCall('/admin/change-password', { method: 'POST', body: JSON.stringify(payload) });
+
+    if (result && result.success) {
+        showAlert('globalAlert', 'success', getTranslation(result.message || 'Admin password changed successfully. You may need to log in again with your new password if your session is invalidated.'));
+        form.reset();
+        // Optionally, you could force a logout here or inform the user they might be logged out soon.
+        // For simplicity, we'll just show the message. The current session might still be valid
+        // until it expires or is explicitly terminated.
+    } else if (result && result.message) {
+        showAlert('globalAlert', 'danger', getTranslation(result.message));
+    } else {
+        // General error message if result or result.message is not available, handled by apiCall
     }
 }
 
@@ -1732,7 +1799,71 @@ async function loadConfig() {
         document.getElementById('routerPort').value = data.mikrotik.port;
         document.getElementById('routerUsername').value = data.mikrotik.username;
         document.getElementById('hotspotLoginUrl').value = data.mikrotik.hotspot_login_url;
+
+        if (data.features) {
+            featureFlags = data.features;
+            updateFeatureAvailabilityUI();
+        }
     }
+}
+
+function updateFeatureAvailabilityUI() {
+    // For "Create" tab -> Batch Voucher Generation -> PDF Export button
+    const bulkPdfButton = document.getElementById('exportVouchersPDFButton');
+    if (bulkPdfButton) {
+        if (!featureFlags.pdf_export) {
+            bulkPdfButton.disabled = true;
+            bulkPdfButton.title = getTranslation('PDF export is not available. Server may be missing dependencies.');
+            // Optionally add a small text indicator
+            let indicator = document.getElementById('bulkPdfIndicator');
+            if (!indicator) {
+                indicator = document.createElement('small');
+                indicator.id = 'bulkPdfIndicator';
+                indicator.style.marginLeft = '10px';
+                indicator.style.color = 'var(--theme-text-secondary)';
+                bulkPdfButton.parentNode.insertBefore(indicator, bulkPdfButton.nextSibling);
+            }
+            indicator.textContent = getTranslation('(PDF export disabled)');
+        } else {
+            bulkPdfButton.disabled = false;
+            bulkPdfButton.title = '';
+            const indicator = document.getElementById('bulkPdfIndicator');
+            if (indicator) indicator.textContent = '';
+        }
+    }
+
+    // For "Users" tab -> Export Users -> PDF Vouchers button
+    // This is a bit trickier as the button is generic: onclick="triggerExport('pdf_voucher')"
+    // We can disable it or change its appearance.
+    const usersTabPdfExportButton = document.querySelector('#users .panel button[onclick="triggerExport(\'pdf_voucher\')"]');
+    if (usersTabPdfExportButton) {
+        if (!featureFlags.pdf_export) {
+            usersTabPdfExportButton.disabled = true;
+            usersTabPdfExportButton.style.opacity = '0.5';
+            usersTabPdfExportButton.title = getTranslation('PDF voucher export is not available. Server may be missing dependencies.');
+             // Optionally add a small text indicator
+            let indicator = document.getElementById('usersTabPdfIndicator');
+            if (!indicator) {
+                indicator = document.createElement('small');
+                indicator.id = 'usersTabPdfIndicator';
+                indicator.style.marginLeft = '5px'; // Adjust as needed
+                indicator.style.color = 'var(--theme-text-secondary)';
+                // Insert after the button, or find a suitable place in the layout
+                usersTabPdfExportButton.parentNode.insertBefore(indicator, usersTabPdfExportButton.nextSibling);
+            }
+            indicator.textContent = getTranslation('(PDF export disabled)');
+        } else {
+            usersTabPdfExportButton.disabled = false;
+            usersTabPdfExportButton.style.opacity = '1';
+            usersTabPdfExportButton.title = '';
+            const indicator = document.getElementById('usersTabPdfIndicator');
+            if (indicator) indicator.textContent = '';
+        }
+    }
+
+    // QR Code availability could be indicated near hotspotLoginUrl in settings, or where QR codes are expected.
+    // For now, the backend handles QR code omission if the library is missing.
+    // A message about QR codes is already shown by exportVouchersHTMLButton if hotspotLoginUrl is missing.
 }
 
 
