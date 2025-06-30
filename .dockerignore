@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Python virtual environment
+venv/
+*.venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE / Editor specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Database file (should be managed via volumes in production)
+hotspot_analytics.db
+*.db
+
+# Log files (should be handled by Docker logging or volumes)
+*.log
+logs/
+
+# Docker specific files
+Dockerfile
+.dockerignore
+
+# Test files / reports
+htmlcov/
+.coverage
+*.cover
+.pytest_cache/
+nosetests.xml
+coverage.xml
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+wheels/
+
+# Configuration - better to mount this at runtime
+config.json

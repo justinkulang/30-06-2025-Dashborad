@@ -28,10 +28,10 @@ except Exception as e:
 bind = f"{host}:{port}"
 workers = (os.cpu_count() * 2) + 1  # Standard Gunicorn recommendation
 
-# Optional: Logging configuration for Gunicorn
-# accesslog = '-'  # Log to stdout
-# errorlog = '-'   # Log to stdout
-# loglevel = 'info'
+# Logging configuration for Gunicorn
+accesslog = '-'  # Log to stdout
+errorlog = '-'   # Log to stdout
+loglevel = 'info' # Set a default log level
 
 print(f"Gunicorn will bind to: {bind}")
 print(f"Gunicorn will use {workers} workers.")

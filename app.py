@@ -273,21 +273,26 @@ def setup_logging(app_config_instance):
     _logger.info(f"Console logging configured with level: {logging.getLevelName(ch.level)}") # Use ch.level for accuracy
 
     # File Handler
-    try:
-        log_file_path = app_config_instance.get('server', {}).get('log_file', 'mikrotik_dashboard.log')
-        log_dir = os.path.dirname(log_file_path)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir, exist_ok=True)
+    disable_file_logging = os.environ.get('DISABLE_FILE_LOGGING', 'false').lower() == 'true'
 
-        fh = logging.FileHandler(log_file_path)
-        file_log_level_str = app_config_instance.get('server', {}).get('log_level_file', 'INFO').upper()
-        file_log_level = getattr(logging, file_log_level_str, logging.INFO) # Default to INFO if invalid
-        fh.setLevel(file_log_level)
-        fh.setFormatter(formatter)
-        _logger.addHandler(fh)
-        _logger.info(f"File logging configured to: {log_file_path} with level: {file_log_level_str}")
-    except Exception as e:
-        _logger.error(f"Failed to configure file logging: {e}", exc_info=True)
+    if not disable_file_logging:
+        try:
+            log_file_path = app_config_instance.get('server', {}).get('log_file', 'mikrotik_dashboard.log')
+            log_dir = os.path.dirname(log_file_path)
+            if log_dir and not os.path.exists(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
+
+            fh = logging.FileHandler(log_file_path)
+            file_log_level_str = app_config_instance.get('server', {}).get('log_level_file', 'INFO').upper()
+            file_log_level = getattr(logging, file_log_level_str, logging.INFO) # Default to INFO if invalid
+            fh.setLevel(file_log_level)
+            fh.setFormatter(formatter)
+            _logger.addHandler(fh)
+            _logger.info(f"File logging configured to: {log_file_path} with level: {file_log_level_str}")
+        except Exception as e:
+            _logger.error(f"Failed to configure file logging: {e}", exc_info=True)
+    else:
+        _logger.info("File logging is disabled via DISABLE_FILE_LOGGING environment variable.")
 
 setup_logging(app_config) # Call the setup function with the loaded app_config
 

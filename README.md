@@ -197,6 +197,80 @@ server {
 *   **Monitoring:** Set up monitoring for your application and server to track performance and errors.
 *   **Firewall:** Configure a firewall to only allow necessary traffic to your server (e.g., ports 80 and 443).
 
+## Docker Deployment
+
+This application can be deployed using Docker. A `Dockerfile` is provided to build an image.
+
+### Prerequisites
+
+*   Docker installed on your system.
+
+### Building the Docker Image
+
+1.  **Clone the repository (if you haven't already):**
+    ```bash
+    git clone <repository_url>
+    cd <repository_directory>
+    ```
+2.  **Build the image:**
+    From the root of the project directory (where the `Dockerfile` is located), run:
+    ```bash
+    docker build -t mikrotik-hotspot-dashboard .
+    ```
+    You can replace `mikrotik-hotspot-dashboard` with your preferred image name.
+
+### Running the Docker Container
+
+When running the container, you'll need to manage configuration, persistent data, and environment variables.
+
+1.  **Configuration (`config.json`):**
+    The application can generate a default `config.json` on first start. However, it's recommended to manage your `config.json` externally and mount it into the container.
+    *   Create a `config.json` file on your host system. You can copy and modify the structure from the repository or let the application generate one on first run and then copy it out of a temporary container (`docker cp <container_id>:/app/config.json ./my_config.json`).
+    *   Ensure your `config.json` has the correct Mikrotik details, admin credentials, and server settings (especially `host: "0.0.0.0"` for Gunicorn to be accessible).
+
+2.  **Persistent Data:**
+    *   **Database (`hotspot_analytics.db`):** To persist analytics data, mount a volume to the path specified for the database in your `config.json`. If using the default path, it's in the application root (e.g., `/app/hotspot_analytics.db` inside the container).
+    *   **Logs (`mikrotik_dashboard.log`):** The Docker image is configured to disable file logging by default (`DISABLE_FILE_LOGGING=true`), with logs going to `stdout`/`stderr` (handled by Docker). If you re-enable file logging or want to persist internal logs, mount a volume to the path specified for `log_file` in `config.json`.
+
+3.  **Environment Variables:**
+    *   **`FLASK_SECRET_KEY` (Required for Production):** Set this to a strong, random string.
+    *   **`DISABLE_FILE_LOGGING` (Optional):** Set to `false` if you want to enable file logging inside the container (default is `true` in the provided Dockerfile, which disables file logs).
+    *   Other environment variables could be added in the future to override `config.json` settings.
+
+4.  **Example `docker run` command:**
+
+    Replace placeholders (`/path/to/your/...`, `your_strong_secret_key`, `your_image_name:tag`) with your actual values.
+
+    ```bash
+    docker run -d \
+        --name hotspot-dashboard-container \
+        -p 5000:5000 \
+        -v /path/to/your/config.json:/app/config.json \
+        -v /path/to/your/data/db:/app/db_data \
+        # Example: if your config.json's database.uri is "sqlite:////app/db_data/hotspot_analytics.db"
+        # -v /path/to/your/data/logs:/app/logs \
+        # Example: if your config.json's server.log_file is "/app/logs/mikrotik_dashboard.log" and file logging is enabled
+        -e FLASK_SECRET_KEY="your_strong_secret_key_here" \
+        # -e DISABLE_FILE_LOGGING="false" # Uncomment to enable file logging
+        mikrotik-hotspot-dashboard
+        # Or your_image_name:tag if you used a different one
+    ```
+
+    **Explanation:**
+    *   `-d`: Run in detached mode.
+    *   `--name hotspot-dashboard-container`: Assign a name to the container.
+    *   `-p 5000:5000`: Map port 5000 on the host to port 5000 in the container (assuming your `config.json` and `gunicorn_config.py` use port 5000).
+    *   `-v /path/to/your/config.json:/app/config.json`: Mounts your local `config.json` into the container at `/app/config.json`. **Important:** The application expects `config.json` to be in its root directory (`/app/` inside the container).
+    *   `-v /path/to/your/data/db:/app/db_data`: Mounts a directory from your host to `/app/db_data` inside the container. You would then set `database.uri` in your `config.json` to something like `sqlite:////app/db_data/hotspot_analytics.db`.
+    *   `-e FLASK_SECRET_KEY="..."`: Sets the required secret key.
+
+    **Note on Paths in `config.json` for Docker:**
+    When running in Docker, paths in `config.json` for `database.uri` (if SQLite) and `server.log_file` should be relative to the container's file system (e.g., `/app/db_data/hotspot_analytics.db`, `/app/logs/mikrotik_dashboard.log`). Match these paths with your volume mounts.
+
+### WeasyPrint Dependencies
+
+The Dockerfile attempts to install system dependencies for WeasyPrint to enable PDF export. If you encounter issues with PDF generation or want a smaller image and don't need PDF export, you can remove the WeasyPrint-related `apt-get install` lines from the `Dockerfile` and rebuild the image. The application will then run with PDF export disabled.
+
 ## Translations (i18n)
 
 This application uses Flask-Babel for internationalization.
