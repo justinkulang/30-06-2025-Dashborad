@@ -652,6 +652,39 @@
                     </div>
                 </div>
             </div>
+
+        <div class="panel" id="realtimeTrafficPanel">
+            <h3 class="panel-header">Real-time Interface Traffic</h3>
+            <div class="form-group">
+                <label for="realtimeInterfaceName">Interface Name (e.g., ether1, pppoe-out1)</label>
+                <div style="display: flex; gap: 10px;">
+                    <input type="text" id="realtimeInterfaceName" placeholder="Enter interface name" style="flex-grow: 1;">
+                    <button id="startRealtimeTrafficButton" class="btn btn-primary">
+                        <i class="fas fa-play"></i> <span>Start Monitoring</span>
+                    </button>
+                </div>
+            </div>
+            <div class="dashboard-grid" style="grid-template-columns: 1fr 1fr; margin-top: 1rem;">
+                <div class="stat-card" style="border-left-color: var(--info-color);">
+                    <i class="fas fa-arrow-down stat-card-icon" style="color: var(--info-color);"></i>
+                    <div class="stat-card-info">
+                        <h3 id="realtimeRxRate">N/A</h3>
+                        <p>Download Rate</p>
+                    </div>
+                </div>
+                <div class="stat-card" style="border-left-color: var(--warning-color);">
+                    <i class="fas fa-arrow-up stat-card-icon" style="color: var(--warning-color);"></i>
+                    <div class="stat-card-info">
+                        <h3 id="realtimeTxRate">N/A</h3>
+                        <p>Upload Rate</p>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-container" style="margin-top: 1.5rem; height: 250px;"> <!-- Use chart-container for consistent styling/height -->
+                <canvas id="realtimeTrafficChart"></canvas>
+            </div>
+        </div>
+
             <div class="panel">
                 <p>Welcome to The IT Dad's Hotspot Management System. Use the menu on the left to navigate.</p>
             </div>
@@ -1032,6 +1065,12 @@ let topUsersChartInstance;
 let historicalUsageChartInstance;
 let historicalPeakUsersChartInstance;
 
+// Real-time traffic monitoring variables
+let trafficPollIntervalId = null;
+let lastTrafficStats = {}; // Stores { 'interfaceName': { rxByte: X, txByte: Y, timestamp: Z } }
+const TRAFFIC_POLL_INTERVAL = 3000; // Milliseconds
+let realtimeTrafficChartInstance = null;
+
 // Helper function to get translations
 function getTranslation(key, ...args) {
     let translated = cachedTranslations[key] || key;
@@ -1255,6 +1294,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadHistoricalDataBtn = document.getElementById('loadHistoricalDataButton');
     if (loadHistoricalDataBtn) {
         loadHistoricalDataBtn.addEventListener('click', loadHistoricalAnalytics);
+    }
+
+    const startTrafficBtn = document.getElementById('startRealtimeTrafficButton');
+    if (startTrafficBtn) {
+        startTrafficBtn.addEventListener('click', startTrafficMonitoring); // Will toggle start/stop
     }
     
     // Set default dates for historical analytics
@@ -2476,6 +2520,299 @@ function formatBytes(bytes) {
     const i = Math.floor(Math.log(numBytes) / Math.log(k));
     return `${parseFloat((numBytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
+
+function formatBitRate(bytesPerSecond) {
+    if (isNaN(bytesPerSecond) || bytesPerSecond < 0) return 'N/A';
+    if (bytesPerSecond === 0) return '0 Kbps';
+
+    const bitsPerSecond = bytesPerSecond * 8;
+    const k = 1000; // Network speeds use 1000 for kilo, mega, giga
+    const sizes = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
+
+    if (bitsPerSecond < 1) return `${bitsPerSecond.toFixed(0)} bps`; // Should not happen if bytesPerSecond > 0
+
+    const i = Math.floor(Math.log10(bitsPerSecond) / Math.log10(k));
+
+    // Ensure 'i' is within the bounds of the 'sizes' array
+    const safeIndex = Math.min(i, sizes.length - 1);
+
+    let rate = bitsPerSecond / Math.pow(k, safeIndex);
+
+    // For bps, typically no decimal. For Kbps, Mbps, etc., 1 or 2 decimal places.
+    if (safeIndex === 0) { // bps
+        rate = rate.toFixed(0);
+    } else {
+        rate = rate.toFixed(2);
+    }
+    return `${rate} ${sizes[safeIndex]}`;
+}
+
+async function fetchAndDisplayTraffic() {
+    const interfaceNameInput = document.getElementById('realtimeInterfaceName');
+    if (!interfaceNameInput || !interfaceNameInput.value) {
+        // This case should ideally be prevented by disabling input or stopping poll if name is cleared
+        logger.warn("fetchAndDisplayTraffic: Interface name is empty.");
+        stopTrafficMonitoring(); // Stop if no interface name
+        return;
+    }
+    const interfaceName = interfaceNameInput.value.trim();
+
+    try {
+        const result = await apiCall(`/realtime/interface-stats/${encodeURIComponent(interfaceName)}`);
+
+        if (result && result.success && result.data) {
+            const currentStats = result.data;
+            const now = new Date(currentStats.timestamp); // Assuming ISO string from backend
+            const currentRxBytes = parseInt(currentStats['rx-byte'], 10);
+            const currentTxBytes = parseInt(currentStats['tx-byte'], 10);
+
+            if (lastTrafficStats[interfaceName] && lastTrafficStats[interfaceName].timestamp) {
+                const lastTime = new Date(lastTrafficStats[interfaceName].timestamp);
+                const timeDeltaSeconds = (now.getTime() - lastTime.getTime()) / 1000;
+
+                if (timeDeltaSeconds > 0) {
+                    const rxBytesDelta = currentRxBytes - lastTrafficStats[interfaceName].rxByte;
+                    const txBytesDelta = currentTxBytes - lastTrafficStats[interfaceName].txByte;
+
+                    const rxRateBps = (rxBytesDelta >= 0 ? rxBytesDelta : 0) / timeDeltaSeconds; // Bytes per second
+                    const txRateBps = (txBytesDelta >= 0 ? txBytesDelta : 0) / timeDeltaSeconds; // Bytes per second
+
+                    document.getElementById('realtimeRxRate').textContent = formatBitRate(rxRateBps);
+                    document.getElementById('realtimeTxRate').textContent = formatBitRate(txRateBps);
+
+                    // Update chart
+                    if (realtimeTrafficChartInstance) {
+                        const MAX_DATA_POINTS = 20; // Show last 20 points (e.g., 1 minute at 3s interval)
+                        const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                        realtimeTrafficChartInstance.data.labels.push(nowLabel);
+                        realtimeTrafficChartInstance.data.datasets[0].data.push(rxRateBps); // Download
+                        realtimeTrafficChartInstance.data.datasets[1].data.push(txRateBps); // Upload
+
+                        if (realtimeTrafficChartInstance.data.labels.length > MAX_DATA_POINTS) {
+                            realtimeTrafficChartInstance.data.labels.shift();
+                            realtimeTrafficChartInstance.data.datasets.forEach(dataset => {
+                                dataset.data.shift();
+                            });
+                        }
+                        realtimeTrafficChartInstance.update();
+                    }
+                }
+            } else {
+                // First data point for this interface, display 0 rates and prime the chart if needed
+                document.getElementById('realtimeRxRate').textContent = formatBitRate(0);
+                document.getElementById('realtimeTxRate').textContent = formatBitRate(0);
+                if (realtimeTrafficChartInstance && realtimeTrafficChartInstance.data.labels.length === 0) {
+                    // Add an initial "zero" point to the chart if it's empty
+                    const initialLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    realtimeTrafficChartInstance.data.labels.push(initialLabel);
+                    realtimeTrafficChartInstance.data.datasets[0].data.push(0);
+                    realtimeTrafficChartInstance.data.datasets[1].data.push(0);
+                    realtimeTrafficChartInstance.update();
+                }
+            }
+
+            lastTrafficStats[interfaceName] = {
+                rxByte: currentRxBytes,
+                txByte: currentTxBytes,
+                timestamp: currentStats.timestamp // Store the ISO string timestamp
+            };
+        } else {
+            const errorMessage = result ? getTranslation(result.message) : getTranslation('Failed to fetch traffic stats.');
+            showAlert('globalAlert', 'danger', `${getTranslation('Error for interface')} "${interfaceName}": ${errorMessage}`);
+            stopTrafficMonitoring(); // Stop polling on error
+        }
+    } catch (error) {
+        logger.error("Error in fetchAndDisplayTraffic:", error);
+        showAlert('globalAlert', 'danger', `${getTranslation('Network or server error while fetching traffic for')} "${interfaceName}".`);
+        stopTrafficMonitoring(); // Stop polling on significant error
+    }
+}
+
+function startTrafficMonitoring() {
+    const interfaceNameInput = document.getElementById('realtimeInterfaceName');
+    const interfaceName = interfaceNameInput.value.trim();
+    const startButton = document.getElementById('startRealtimeTrafficButton');
+    const startButtonText = startButton.querySelector('span');
+    const startButtonIcon = startButton.querySelector('i');
+
+    if (!interfaceName) {
+        showAlert('globalAlert', 'warning', getTranslation('Please enter an interface name.'));
+        return;
+    }
+
+    if (trafficPollIntervalId !== null) { // Already monitoring, so this call means stop
+        stopTrafficMonitoring();
+        return;
+    }
+
+    // Clear previous stats for this interface before starting
+    lastTrafficStats[interfaceName] = null;
+    document.getElementById('realtimeRxRate').textContent = getTranslation('Loading...');
+    document.getElementById('realtimeTxRate').textContent = getTranslation('Loading...');
+
+    initializeRealtimeTrafficChart(); // Initialize/Re-initialize the chart
+
+    // Fetch immediately, then set interval
+    fetchAndDisplayTraffic().then(() => {
+        // Only set interval if the first fetch was successful (or at least didn't immediately call stopTrafficMonitoring)
+        if (trafficPollIntervalId === null) { // Check if stopTrafficMonitoring was called by fetchAndDisplayTraffic
+             trafficPollIntervalId = setInterval(fetchAndDisplayTraffic, TRAFFIC_POLL_INTERVAL);
+             if (startButtonText) startButtonText.textContent = getTranslation('Stop Monitoring');
+             if (startButtonIcon) { startButtonIcon.classList.remove('fa-play'); startButtonIcon.classList.add('fa-stop');}
+             interfaceNameInput.disabled = true;
+        }
+    }).catch(() => {
+        // Error handled in fetchAndDisplayTraffic, which should call stopTrafficMonitoring
+        // Ensure UI is reset if initial fetch fails badly and stop was called.
+        if (startButtonText) startButtonText.textContent = getTranslation('Start Monitoring');
+        if (startButtonIcon) { startButtonIcon.classList.remove('fa-stop'); startButtonIcon.classList.add('fa-play');}
+        interfaceNameInput.disabled = false;
+    });
+}
+
+function stopTrafficMonitoring() {
+    const interfaceNameInput = document.getElementById('realtimeInterfaceName');
+    const startButton = document.getElementById('startRealtimeTrafficButton');
+    const startButtonText = startButton.querySelector('span');
+    const startButtonIcon = startButton.querySelector('i');
+
+    if (trafficPollIntervalId !== null) {
+        clearInterval(trafficPollIntervalId);
+        trafficPollIntervalId = null;
+    }
+
+    document.getElementById('realtimeRxRate').textContent = 'N/A';
+    document.getElementById('realtimeTxRate').textContent = 'N/A';
+    if (startButtonText) startButtonText.textContent = getTranslation('Start Monitoring');
+    if (startButtonIcon) { startButtonIcon.classList.remove('fa-stop'); startButtonIcon.classList.add('fa-play');}
+    if(interfaceNameInput) interfaceNameInput.disabled = false;
+
+    // Clear the chart data when stopping
+    if (realtimeTrafficChartInstance) {
+        realtimeTrafficChartInstance.data.labels = [];
+        realtimeTrafficChartInstance.data.datasets.forEach(dataset => {
+            dataset.data = [];
+        });
+        realtimeTrafficChartInstance.update();
+        // Optionally, destroy the chart instance if preferred, to be recreated on next start
+        // realtimeTrafficChartInstance.destroy();
+        // realtimeTrafficChartInstance = null;
+    }
+    // lastTrafficStats for the specific interface can be cleared if desired, or kept for next start.
+    // For simplicity, we'll let it be overwritten on next start.
+}
+
+function initializeRealtimeTrafficChart() {
+    const ctx = document.getElementById('realtimeTrafficChart').getContext('2d');
+    if (realtimeTrafficChartInstance) {
+        realtimeTrafficChartInstance.destroy();
+    }
+
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const gridColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const labelColor = isDarkMode ?
+        getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() || '#bdc3c7' :
+        getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim() || '#2c3e50';
+    const tooltipBgColor = isDarkMode ? '#2c3e50' : '#fff';
+    const tooltipTitleColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+    const tooltipBodyColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
+
+    const downloadColor = getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim() || '#3498db';
+    const uploadColor = getComputedStyle(document.documentElement).getPropertyValue('--warning-color').trim() || '#f39c12';
+
+
+    realtimeTrafficChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [], // To be populated with timestamps or relative time
+            datasets: [
+                {
+                    label: getTranslation('Download Rate') || 'Download Rate',
+                    data: [],
+                    borderColor: downloadColor,
+                    backgroundColor: hexToRgba(downloadColor, 0.1),
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 2,
+                    borderWidth: 1.5
+                },
+                {
+                    label: getTranslation('Upload Rate') || 'Upload Rate',
+                    data: [],
+                    borderColor: uploadColor,
+                    backgroundColor: hexToRgba(uploadColor, 0.1),
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 2,
+                    borderWidth: 1.5
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: {
+                duration: 200 // Faster animation for live feel
+            },
+            scales: {
+                x: {
+                    type: 'category', // Or 'time' if using actual time objects
+                    ticks: {
+                        color: labelColor,
+                        maxRotation: 0,
+                        autoSkipPadding: 20
+                    },
+                    grid: {
+                        color: gridColor,
+                        display: false // Hide x-axis grid lines for cleaner look
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        color: labelColor,
+                        callback: function(value) {
+                            // Chart data is stored in Bytes/second, formatBitRate expects Bytes/second
+                            return formatBitRate(value);
+                        }
+                    },
+                    grid: {
+                        color: gridColor
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    labels: { color: labelColor }
+                },
+                tooltip: {
+                    backgroundColor: tooltipBgColor,
+                    titleColor: tooltipTitleColor,
+                    bodyColor: tooltipBodyColor,
+                    mode: 'index',
+                    intersect: false,
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            if (context.parsed.y !== null) {
+                                // Assuming data is stored as Bytes/sec in the chart
+                                label += formatBitRate(context.parsed.y);
+                            }
+                            return label;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// --- Event Listener Setup in DOMContentLoaded ---
+// (This will be added/modified in the DOMContentLoaded listener)
 
 // --- Historical Analytics Functions ---
 async function loadHistoricalAnalytics() {

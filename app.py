@@ -1343,6 +1343,63 @@ class RouterOSService:
                 
         return success_count, len(failed_usernames), failed_usernames
 
+    def get_interface_traffic(self, interface_name: str) -> dict | None:
+        """Fetches Rx/Tx byte counters for a specific interface."""
+        api = get_mikrotik_api()
+        if not api:
+            logger.error("get_interface_traffic: Mikrotik API not available.")
+            return None
+
+        try:
+            # Fetch details for the specific interface.
+            # Using .select to get specific properties and .where for filtering.
+            # Note: librouteros path/select/where syntax can be a bit particular.
+            # If direct filtering by name is problematic across all RouterOS versions/setups,
+            # an alternative is to fetch all interfaces and filter in Python.
+            # Let's try direct selection first.
+            # We need 'name', 'rx-byte', 'tx-byte'.
+            # The '.id' is usually not needed here but often fetched by default.
+            # Ensure proplist is correctly formatted for librouteros.
+
+            # Simpler approach: get all interfaces and filter, as 'where' can be tricky
+            # with names containing spaces or special characters if not handled perfectly by client.
+            interfaces = list(api.path('/interface').select('name', 'rx-byte', 'tx-byte', 'running'))
+
+            target_interface_stats = None
+            for iface in interfaces:
+                if iface.get('name') == interface_name:
+                    target_interface_stats = iface
+                    break
+
+            if not target_interface_stats:
+                logger.warning(f"get_interface_traffic: Interface '{interface_name}' not found.")
+                return None
+
+            if not target_interface_stats.get('running', 'false') == 'true':
+                logger.warning(f"get_interface_traffic: Interface '{interface_name}' is not currently running.")
+                # Return stats anyway, but frontend might want to know it's not 'live' in the same way
+                # Or return None / specific error - for now, let's return stats if available.
+
+            rx_bytes = int(target_interface_stats.get('rx-byte', 0))
+            tx_bytes = int(target_interface_stats.get('tx-byte', 0))
+
+            return {
+                'name': interface_name,
+                'rx-byte': rx_bytes,
+                'tx-byte': tx_bytes,
+                'timestamp': datetime.utcnow().isoformat() + "Z" # ISO format UTC
+            }
+
+        except (librouteros.exceptions.LibRouterosError, TrapError) as e:
+            logger.error(f"get_interface_traffic: Mikrotik API error for interface '{interface_name}': {e}")
+            return None
+        except ValueError as e:
+            logger.error(f"get_interface_traffic: Error converting byte counts for interface '{interface_name}': {e}")
+            return None
+        except Exception as e:
+            logger.error(f"get_interface_traffic: Unexpected error for interface '{interface_name}': {e}", exc_info=True)
+            return None
+
 
 router_os_service = RouterOSService()
 
@@ -1582,6 +1639,28 @@ def change_admin_password():
     except Exception as e:
         logger.error(f"Error saving new admin password hash to config: {e}", exc_info=True)
         return jsonify({'success': False, 'message': _('Could not save new password due to a server error.')}), 500
+
+
+@app.route('/api/realtime/interface-stats/<path:interface_name>', methods=['GET'])
+@login_required
+def get_realtime_interface_stats(interface_name: str):
+    if not interface_name:
+        return jsonify({'success': False, 'message': _('Interface name is required.')}), 400
+
+    try:
+        stats = router_os_service.get_interface_traffic(interface_name)
+        if stats:
+            return jsonify({'success': True, 'data': stats})
+        else:
+            # Attempt to distinguish if interface was not found vs other error
+            # This is a bit indirect; get_interface_traffic logs specifics.
+            # For the API response, a general "not found or error" might suffice,
+            # or we could refine get_interface_traffic to return more specific error types.
+            # For now, let's assume if None, it could be "not found".
+            return jsonify({'success': False, 'message': _('Interface not found or error fetching stats.')}), 404
+    except Exception as e:
+        logger.error(f"API error in get_realtime_interface_stats for '{interface_name}': {e}", exc_info=True)
+        return jsonify({'success': False, 'message': _('An unexpected server error occurred.')}), 500
 
 
 @app.route('/api/dashboard-stats', methods=['GET'])
@@ -2158,7 +2237,23 @@ def get_translations():
         # Feature availability messages
         'PDF export is not available. Server may be missing dependencies.': _('PDF export is not available. Server may be missing dependencies.'),
         '(PDF export disabled)': _('(PDF export disabled)'),
-        'PDF voucher export is not available. Server may be missing dependencies.': _('PDF voucher export is not available. Server may be missing dependencies.')
+        'PDF voucher export is not available. Server may be missing dependencies.': _('PDF voucher export is not available. Server may be missing dependencies.'),
+
+        # Real-time interface stats API messages
+        'Interface name is required.': _('Interface name is required.'),
+        'Interface not found or error fetching stats.': _('Interface not found or error fetching stats.'),
+
+        # Real-time traffic monitoring UI (JavaScript)
+        'Please enter an interface name.': _('Please enter an interface name.'),
+        'Start Monitoring': _('Start Monitoring'),
+        'Stop Monitoring': _('Stop Monitoring'),
+        'Error for interface': _('Error for interface'),
+        'Failed to fetch traffic stats.': _('Failed to fetch traffic stats.'),
+        'Network or server error while fetching traffic for': _('Network or server error while fetching traffic for'),
+        'Download Rate': _('Download Rate'), # For chart label
+        'Upload Rate': _('Upload Rate')     # For chart label
+        # 'Loading...' is already present
+        # Panel titles and rate labels like 'Download Rate' are currently hardcoded in HTML.
     }
     return jsonify(translations)
 
