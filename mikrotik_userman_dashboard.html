@@ -504,6 +504,47 @@
              transition: background-color 0.3s ease;
         }
 
+        /* Styles for Router Status Panel */
+        .router-status-content {
+            display: flex;
+            flex-wrap: wrap; /* Allow wrapping on smaller screens */
+            gap: 20px;
+            margin-top: 1rem;
+            align-items: flex-start; /* Align items to the top */
+        }
+        .router-status-text-info {
+            flex: 1; /* Takes up available space */
+            min-width: 200px; /* Minimum width before wrapping */
+            font-size: 0.9em;
+        }
+        .router-status-text-info p {
+            margin-bottom: 0.5rem;
+        }
+        .router-status-charts {
+            flex: 1; /* Takes up available space */
+            display: flex;
+            flex-wrap: wrap; /* Allow charts to wrap if needed */
+            gap: 20px; /* Gap between charts */
+            justify-content: space-around; /* Distribute charts nicely */
+            min-width: 220px; /* Minimum width for the charts area */
+        }
+        .chart-gauge-container {
+            text-align: center;
+            flex-basis: 100px; /* Base size for each gauge, allowing them to grow if space */
+            flex-grow: 1;
+            max-width: 120px; /* Max width for each gauge to keep them small */
+        }
+        .chart-gauge-container canvas {
+            max-width: 100%; /* Ensure canvas is responsive within its container */
+            height: auto !important; /* Override potential fixed height from Chart.js if width is driving size */
+        }
+        .chart-gauge-container p {
+            font-size: 0.85em;
+            margin-top: 5px;
+            color: var(--theme-text-secondary);
+        }
+
+
         .analytics-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -682,6 +723,33 @@
             </div>
             <div class="chart-container" style="margin-top: 1.5rem; height: 250px;"> <!-- Use chart-container for consistent styling/height -->
                 <canvas id="realtimeTrafficChart"></canvas>
+            </div>
+        </div>
+
+        <div class="panel" id="routerStatusPanel">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 class="panel-header" style="border-bottom: none; margin-bottom: 0;">Router Status</h3>
+                <button id="refreshRouterStatusButton" class="btn btn-sm btn-secondary">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+            <div class="router-status-content" style="display: flex; flex-wrap: wrap; gap: 20px; margin-top: 1rem; align-items: flex-start;">
+                <div class="router-status-text-info" style="flex: 1; min-width: 200px;">
+                    <p><strong>Model:</strong> <span id="routerModel">N/A</span></p>
+                    <p><strong>Version:</strong> <span id="routerVersion">N/A</span></p>
+                    <p><strong>Uptime:</strong> <span id="routerUptime">N/A</span></p>
+                    <small id="routerStatusError" class="text-danger" style="display: none; margin-top: 10px;"></small>
+                </div>
+                <div class="router-status-charts" style="flex: 1; display: flex; flex-wrap: wrap; gap: 15px; justify-content: space-around; min-width: 220px;">
+                    <div class="chart-gauge-container" style="text-align: center;">
+                        <canvas id="routerCpuLoadChart" width="100" height="100"></canvas>
+                        <p style="font-size: 0.85em; margin-top: 5px;">CPU Load: <span id="routerCpuLoadText">N/A</span></p>
+                    </div>
+                    <div class="chart-gauge-container" style="text-align: center;">
+                        <canvas id="routerMemoryUsageChart" width="100" height="100"></canvas>
+                        <p style="font-size: 0.85em; margin-top: 5px;">Memory: <span id="routerMemoryUsageText">N/A</span></p>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1070,6 +1138,8 @@ let trafficPollIntervalId = null;
 let lastTrafficStats = {}; // Stores { 'interfaceName': { rxByte: X, txByte: Y, timestamp: Z } }
 const TRAFFIC_POLL_INTERVAL = 3000; // Milliseconds
 let realtimeTrafficChartInstance = null;
+let routerCpuLoadChartInstance = null;
+let routerMemoryUsageChartInstance = null;
 
 // Helper function to get translations
 function getTranslation(key, ...args) {
@@ -1143,6 +1213,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 loadAnalyticsData();
                 analyticsDataLoaded = true;
             }
+            if (tabName === 'dashboard') { // When dashboard tab is clicked
+                fetchAndDisplayRouterHealth(); // Refresh router health
+                // loadDashboardStats(); // Already likely called by init or interval
+            }
             
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             link.classList.add('active');
@@ -1160,6 +1234,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup static translated UI elements not covered by other functions
     setupStaticTranslations();
 
+    // Initial call for router health on page load (assuming dashboard is active)
+    fetchAndDisplayRouterHealth();
 
     // Setup filter listeners
     document.getElementById('userSearchInput').addEventListener('input', () => filterAndDisplayUsers());
@@ -1299,6 +1375,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const startTrafficBtn = document.getElementById('startRealtimeTrafficButton');
     if (startTrafficBtn) {
         startTrafficBtn.addEventListener('click', startTrafficMonitoring); // Will toggle start/stop
+    }
+
+    const refreshRouterStatusBtn = document.getElementById('refreshRouterStatusButton');
+    if (refreshRouterStatusBtn) {
+        refreshRouterStatusBtn.addEventListener('click', fetchAndDisplayRouterHealth);
     }
     
     // Set default dates for historical analytics
@@ -2703,6 +2784,101 @@ function stopTrafficMonitoring() {
     // For simplicity, we'll let it be overwritten on next start.
 }
 
+function initRouterCpuLoadChart(targetId, percentage) {
+    const ctx = document.getElementById(targetId).getContext('2d');
+    if (routerCpuLoadChartInstance) {
+        routerCpuLoadChartInstance.destroy();
+    }
+
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#007bff';
+    const gaugeBackgroundColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const textColor = isDarkMode ?
+        getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() || '#bdc3c7' :
+        getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim() || '#2c3e50';
+
+    routerCpuLoadChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            datasets: [{
+                data: [percentage, 100 - percentage],
+                backgroundColor: [primaryColor, gaugeBackgroundColor],
+                borderColor: [primaryColor, gaugeBackgroundColor], // Or set to transparent/panel background
+                borderWidth: 1,
+                circumference: 360, // Full circle
+                rotation: 0,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true, // Keep it square based on width/height attributes of canvas
+            cutout: '75%', // Adjust for thickness of the gauge
+            animation: {
+                duration: 400
+            },
+            plugins: {
+                legend: {
+                    display: false // No legend for a simple gauge
+                },
+                tooltip: {
+                    enabled: false // No tooltips for a simple gauge
+                },
+                // Custom plugin to draw text in the middle (optional, can be done with HTML overlay too)
+                // For simplicity, we'll update a separate HTML span for now.
+            }
+        }
+    });
+    // Update the text span separately
+    const cpuLoadTextEl = document.getElementById('routerCpuLoadText');
+    if (cpuLoadTextEl) cpuLoadTextEl.textContent = `${percentage}%`;
+}
+
+function initRouterMemoryUsageChart(targetId, percentage) {
+    const ctx = document.getElementById(targetId).getContext('2d');
+    if (routerMemoryUsageChartInstance) {
+        routerMemoryUsageChartInstance.destroy();
+    }
+
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    const successColor = getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim() || '#28a745';
+    const gaugeBackgroundColor = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const textColor = isDarkMode ?
+        getComputedStyle(document.documentElement).getPropertyValue('--theme-text-secondary').trim() || '#bdc3c7' :
+        getComputedStyle(document.documentElement).getPropertyValue('--theme-text-primary').trim() || '#2c3e50';
+
+    routerMemoryUsageChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            datasets: [{
+                data: [percentage, 100 - percentage],
+                backgroundColor: [successColor, gaugeBackgroundColor],
+                borderColor: [successColor, gaugeBackgroundColor],
+                borderWidth: 1,
+                circumference: 360,
+                rotation: 0,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            cutout: '75%',
+            animation: {
+                duration: 400
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    enabled: false
+                }
+            }
+        }
+    });
+     // Update the text span separately (will be done in fetchAndDisplayRouterHealth with full text)
+}
+
+
 function initializeRealtimeTrafficChart() {
     const ctx = document.getElementById('realtimeTrafficChart').getContext('2d');
     if (realtimeTrafficChartInstance) {
@@ -2813,6 +2989,110 @@ function initializeRealtimeTrafficChart() {
 
 // --- Event Listener Setup in DOMContentLoaded ---
 // (This will be added/modified in the DOMContentLoaded listener)
+
+async function fetchAndDisplayRouterHealth() {
+    const modelEl = document.getElementById('routerModel');
+    const versionEl = document.getElementById('routerVersion');
+    const uptimeEl = document.getElementById('routerUptime');
+    const cpuLoadTextEl = document.getElementById('routerCpuLoadText'); // Text next to CPU chart
+    const memoryUsageTextEl = document.getElementById('routerMemoryUsageText'); // Text next to Memory chart
+    const errorEl = document.getElementById('routerStatusError');
+
+    // Helper to reset fields
+    const resetUI = (isError = false) => {
+        const errorMsg = isError ? getTranslation('Error') : 'N/A';
+        if (modelEl) modelEl.textContent = errorMsg;
+        if (versionEl) versionEl.textContent = errorMsg;
+        if (uptimeEl) uptimeEl.textContent = errorMsg;
+        if (cpuLoadTextEl) cpuLoadTextEl.textContent = errorMsg;
+        if (memoryUsageTextEl) memoryUsageTextEl.textContent = errorMsg;
+
+        // Reset/clear charts if they exist
+        if (routerCpuLoadChartInstance) {
+            routerCpuLoadChartInstance.data.datasets[0].data = [0, 100];
+            routerCpuLoadChartInstance.update();
+        }
+        if (routerMemoryUsageChartInstance) {
+            routerMemoryUsageChartInstance.data.datasets[0].data = [0, 100];
+            routerMemoryUsageChartInstance.update();
+        }
+    };
+
+    if (errorEl) errorEl.style.display = 'none';
+
+    try {
+        const result = await apiCall('/router/health-status');
+        if (result && result.success && result.data) {
+            const health = result.data;
+
+            if (modelEl) modelEl.textContent = health.model || 'N/A';
+            if (versionEl) versionEl.textContent = health.version || 'N/A';
+            if (uptimeEl) uptimeEl.textContent = health.uptime || 'N/A';
+
+            // CPU Load
+            const cpuLoad = parseInt(health['cpu-load']);
+            if (!isNaN(cpuLoad)) {
+                if (!routerCpuLoadChartInstance) {
+                    initRouterCpuLoadChart('routerCpuLoadChart', cpuLoad);
+                } else {
+                    routerCpuLoadChartInstance.data.datasets[0].data = [cpuLoad, 100 - cpuLoad];
+                    routerCpuLoadChartInstance.update();
+                }
+                if (cpuLoadTextEl) cpuLoadTextEl.textContent = `${cpuLoad}%`;
+            } else {
+                if (cpuLoadTextEl) cpuLoadTextEl.textContent = 'N/A';
+                if (routerCpuLoadChartInstance) { // Reset chart if data invalid
+                    routerCpuLoadChartInstance.data.datasets[0].data = [0, 100];
+                    routerCpuLoadChartInstance.update();
+                }
+            }
+
+            // Memory Usage
+            const totalMem = parseInt(health['total-memory']);
+            const freeMem = parseInt(health['free-memory']);
+            if (!isNaN(totalMem) && !isNaN(freeMem) && totalMem > 0) {
+                const usedMem = totalMem - freeMem;
+                const memPercentage = Math.round((usedMem / totalMem) * 100);
+                if (!routerMemoryUsageChartInstance) {
+                    initRouterMemoryUsageChart('routerMemoryUsageChart', memPercentage);
+                } else {
+                    routerMemoryUsageChartInstance.data.datasets[0].data = [memPercentage, 100 - memPercentage];
+                    routerMemoryUsageChartInstance.update();
+                }
+                if (memoryUsageTextEl) memoryUsageTextEl.textContent = `${formatBytes(usedMem)} / ${formatBytes(totalMem)} (${memPercentage}%)`;
+            } else {
+                if (memoryUsageTextEl) memoryUsageTextEl.textContent = 'N/A';
+                 if (routerMemoryUsageChartInstance) { // Reset chart if data invalid
+                    routerMemoryUsageChartInstance.data.datasets[0].data = [0, 100];
+                    routerMemoryUsageChartInstance.update();
+                }
+            }
+
+            if (health.error) {
+                if(errorEl) {
+                    errorEl.textContent = getTranslation('Partial data received. Error: {0}').replace('{0}', health.error);
+                    errorEl.style.display = 'block';
+                }
+            }
+
+        } else {
+            const message = result ? getTranslation(result.message) : getTranslation('Failed to load router health status.');
+            if(errorEl) {
+                errorEl.textContent = message;
+                errorEl.style.display = 'block';
+            }
+            resetUI(true);
+        }
+    } catch (error) {
+        logger.error("Error in fetchAndDisplayRouterHealth:", error);
+        if(errorEl) {
+            errorEl.textContent = getTranslation('Network or server error while fetching router health.');
+            errorEl.style.display = 'block';
+        }
+        resetUI(true);
+    }
+}
+
 
 // --- Historical Analytics Functions ---
 async function loadHistoricalAnalytics() {

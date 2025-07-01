@@ -1400,6 +1400,95 @@ class RouterOSService:
             logger.error(f"get_interface_traffic: Unexpected error for interface '{interface_name}': {e}", exc_info=True)
             return None
 
+    def get_router_system_health(self) -> dict | None:
+        """Fetches system health information from the Mikrotik router."""
+        api = get_mikrotik_api()
+        if not api:
+            logger.error("get_router_system_health: Mikrotik API not available.")
+            return None
+
+        health_info = {
+            'uptime': 'N/A',
+            'cpu-load': 'N/A',
+            'free-memory': 'N/A',
+            'total-memory': 'N/A',
+            'model': 'N/A',
+            'version': 'N/A', # Will be current-firmware from routerboard or from packages
+            'error': None # To store any specific error message if needed
+        }
+
+        try:
+            # Get system resource info
+            resource_info_list = list(api.path('/system/resource').select('uptime', 'cpu-load', 'free-memory', 'total-memory'))
+            if resource_info_list:
+                resource_info = resource_info_list[0] # Should only be one entry
+                health_info['uptime'] = resource_info.get('uptime', 'N/A')
+                health_info['cpu-load'] = resource_info.get('cpu-load', 'N/A')
+
+                # Memory is often in bytes, convert to string with units if needed by frontend, or send raw
+                free_mem = resource_info.get('free-memory')
+                total_mem = resource_info.get('total-memory')
+
+                if free_mem is not None:
+                    health_info['free-memory'] = int(free_mem) # Store as int
+                if total_mem is not None:
+                    health_info['total-memory'] = int(total_mem) # Store as int
+            else:
+                logger.warning("get_router_system_health: Could not fetch /system/resource info.")
+                health_info['error'] = "Could not fetch system resource info."
+
+
+            # Get routerboard info (model, firmware version)
+            routerboard_info_list = list(api.path('/system/routerboard').select('model', 'current-firmware', 'firmware'))
+            if routerboard_info_list:
+                routerboard_info = routerboard_info_list[0] # Should only be one entry
+                health_info['model'] = routerboard_info.get('model', 'N/A')
+                # 'current-firmware' is usually the RouterOS version on routerboard devices
+                # 'firmware' is often the bootloader version.
+                health_info['version'] = routerboard_info.get('current-firmware', routerboard_info.get('firmware', 'N/A'))
+            else:
+                logger.warning("get_router_system_health: Could not fetch /system/routerboard info. Trying /system/package for version.")
+                if health_info['error']: health_info['error'] += "; Could not fetch routerboard info."
+                else: health_info['error'] = "Could not fetch routerboard info."
+
+            # Fallback or primary method for RouterOS version from packages
+            if health_info['version'] == 'N/A':
+                packages = list(api.path('/system/package').select('name', 'version').where(name='routeros'))
+                if packages:
+                    health_info['version'] = packages[0].get('version', 'N/A')
+                else:
+                    logger.warning("get_router_system_health: Could not determine RouterOS version from packages.")
+                    if health_info['error'] and "routerboard info" in health_info['error'] : # if routerboard also failed
+                         health_info['error'] += "; Could not determine RouterOS version."
+                    elif not health_info['error']: # if only package check failed
+                        health_info['error'] = "Could not determine RouterOS version."
+
+
+            # If after all attempts, version is still N/A, and we have a general error, keep it.
+            # If no general error yet, but version is N/A, it's a specific failure for version.
+            if health_info['version'] == 'N/A' and not health_info['error']:
+                health_info['error'] = "RouterOS version could not be determined."
+            elif health_info['version'] != 'N/A' and health_info['error'] and "RouterOS version" in health_info['error']:
+                # If version was found but error message still mentions it, clean up error message if other parts were fine.
+                # This logic can get complex; for now, let's keep it simple.
+                pass
+
+
+            return health_info
+
+        except (librouteros.exceptions.LibRouterosError, TrapError) as e:
+            logger.error(f"get_router_system_health: Mikrotik API error: {e}")
+            health_info['error'] = f"Mikrotik API error: {str(e)}"
+            return health_info # Return partial data with error
+        except ValueError as e:
+            logger.error(f"get_router_system_health: Error converting system health data: {e}")
+            health_info['error'] = f"Data conversion error: {str(e)}"
+            return health_info # Return partial data with error
+        except Exception as e:
+            logger.error(f"get_router_system_health: Unexpected error: {e}", exc_info=True)
+            health_info['error'] = f"An unexpected error occurred: {str(e)}"
+            return health_info # Return partial data with error
+
 
 router_os_service = RouterOSService()
 
@@ -1661,6 +1750,22 @@ def get_realtime_interface_stats(interface_name: str):
     except Exception as e:
         logger.error(f"API error in get_realtime_interface_stats for '{interface_name}': {e}", exc_info=True)
         return jsonify({'success': False, 'message': _('An unexpected server error occurred.')}), 500
+
+@app.route('/api/router/health-status', methods=['GET'])
+@login_required
+def get_router_health_status_api():
+    try:
+        health_data = router_os_service.get_router_system_health()
+        if health_data:
+            # The service method now returns a dict even on partial failure, including an 'error' key if applicable.
+            # So, we generally return success: True and let the frontend interpret the 'error' field if present.
+            return jsonify({'success': True, 'data': health_data})
+        else:
+            # This case (service returning None) implies total API unavailability from get_mikrotik_api()
+            return jsonify({'success': False, 'message': _('Could not connect to Mikrotik router to fetch health status.')}), 502 # Bad Gateway
+    except Exception as e:
+        logger.error(f"API error in get_router_health_status_api: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': _('An unexpected server error occurred while fetching router health.')}), 500
 
 
 @app.route('/api/dashboard-stats', methods=['GET'])
@@ -2201,11 +2306,6 @@ def get_translations():
         'Are you sure you want to delete all {0} users? This action cannot be undone and is permanent.': _('Are you sure you want to delete all {0} users? This action cannot be undone and is permanent.'),
         
         # Messages from backend that might be displayed via showAlert if not already translated by Flask
-        # These are examples; actual messages from backend routes are already wrapped in _()
-        # 'Successfully deleted {0} user(s) from profile "{1}".': _('Successfully deleted {0} user(s) from profile "{1}".'),
-        # 'Successfully deleted {0} {1} user(s).': _('Successfully deleted {0} {1} user(s).'),
-        # 'Failed to delete users from profile "{0}".': _('Failed to delete users from profile "{0}".'),
-        # 'Failed to delete {0} user(s).': _('Failed to delete {0} user(s).'),
         'Operation failed, no users deleted.': _('Operation failed, no users deleted.'),
         'Successfully processed users for profile {0}. Deleted {1} user(s).': _('Successfully processed users for profile {0}. Deleted {1} user(s).'),
         'Failed to delete users from profile {0}.': _('Failed to delete users from profile {0}.'),
@@ -2251,9 +2351,19 @@ def get_translations():
         'Failed to fetch traffic stats.': _('Failed to fetch traffic stats.'),
         'Network or server error while fetching traffic for': _('Network or server error while fetching traffic for'),
         'Download Rate': _('Download Rate'), # For chart label
-        'Upload Rate': _('Upload Rate')     # For chart label
+        'Upload Rate': _('Upload Rate'),     # For chart label
         # 'Loading...' is already present
-        # Panel titles and rate labels like 'Download Rate' are currently hardcoded in HTML.
+
+        # Router Health Status API
+        'Could not connect to Mikrotik router to fetch health status.': _('Could not connect to Mikrotik router to fetch health status.'),
+        'An unexpected server error occurred while fetching router health.': _('An unexpected server error occurred while fetching router health.'),
+
+        # Router Health UI (JavaScript)
+        'Partial data received. Error: {0}': _('Partial data received. Error: {0}'),
+        'Failed to load router health status.': _('Failed to load router health status.'),
+        'Network or server error while fetching router health.': _('Network or server error while fetching router health.'),
+        'Error': _('Error') # Generic error text for display fields
+        # Panel titles and labels like "Model:", "Version:" are currently hardcoded in HTML.
     }
     return jsonify(translations)
 
