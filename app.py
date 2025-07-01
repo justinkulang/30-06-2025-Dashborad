@@ -2425,7 +2425,17 @@ def get_translations():
         'Partial data received. Error: {0}': _('Partial data received. Error: {0}'),
         'Failed to load router health status.': _('Failed to load router health status.'),
         'Network or server error while fetching router health.': _('Network or server error while fetching router health.'),
-        'Error': _('Error') # Generic error text for display fields
+        'Error': _('Error'), # Generic error text for display fields
+
+        # User Activity History UI (JavaScript)
+        '-- Select User --': _('-- Select User --'),
+        'Please select a user.': _('Please select a user.'),
+        'Please select both start and end dates.': _('Please select both start and end dates.'),
+        'Start date cannot be after end date.': _('Start date cannot be after end date.'),
+        'Loading user activity...': _('Loading user activity...'),
+        'No activity found for this user in the selected period.': _('No activity found for this user in the selected period.'),
+        'Failed to load user activity.': _('Failed to load user activity.'),
+        'Network or server error while fetching user activity.': _('Network or server error while fetching user activity.')
         # Panel titles and labels like "Model:", "Version:" are currently hardcoded in HTML.
     }
     return jsonify(translations)

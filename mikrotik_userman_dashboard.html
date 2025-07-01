@@ -978,10 +978,46 @@
                         </div>
                     </div>
                 </div>
-                 <div class="panel" style="margin-top: 2rem;">
-                    <h3 class="panel-header">User Specific Activity (Coming Soon)</h3>
-                    <p>Detailed activity logs for individual users will be available here.</p>
-                    <!-- Placeholder for user selection and activity display -->
+                <!-- Removed User Specific Activity (Coming Soon) placeholder -->
+
+                <div class="panel" id="userActivityHistoryPanel" style="margin-top: 2rem;">
+                    <h3 class="panel-header">User Activity History</h3>
+                    <div class="form-grid" style="align-items: flex-end; margin-bottom: 1.5rem;">
+                        <div class="form-group">
+                            <label for="historicalUserSelect">Select User</label>
+                            <select id="historicalUserSelect" class="form-control">
+                                <option value="">-- Select User --</option>
+                                <!-- Users will be populated by JavaScript -->
+                            </select>
+                        </div>
+                        <!-- Re-using existing #historicalStartDate, #historicalEndDate, #historicalInterval from above -->
+                        <div class="form-group">
+                             <label>&nbsp;</label> <!-- Spacer for alignment with date pickers -->
+                            <button id="loadUserActivityButton" class="btn btn-info" style="width: 100%;">
+                                <i class="fas fa-history"></i> Load User Activity
+                            </button>
+                        </div>
+                    </div>
+                    <div id="userActivityDisplayArea">
+                        <!-- Table will be generated here by JavaScript -->
+                        <div class="table-container" id="userActivityTableContainer" style="display: none;">
+                             <table id="userActivityTable" class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>Profile</th>
+                                        <th>Data In</th>
+                                        <th>Data Out</th>
+                                        <th>Uptime</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Data rows will be inserted here -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <p id="userActivityMessage" style="text-align: center; margin-top: 1rem; display: none;"></p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1217,6 +1253,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetchAndDisplayRouterHealth(); // Refresh router health
                 // loadDashboardStats(); // Already likely called by init or interval
             }
+            if (tabName === 'historical-analytics') { // When historical analytics tab is clicked
+                 // If users haven't been loaded yet for the dropdown, load them.
+                 // This assumes currentUsers might not be populated if user navigates directly here.
+                if (currentUsers.length === 0) {
+                    loadUsers(); // This will populate the dropdown
+                }
+            }
             
             document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
             link.classList.add('active');
@@ -1381,6 +1424,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (refreshRouterStatusBtn) {
         refreshRouterStatusBtn.addEventListener('click', fetchAndDisplayRouterHealth);
     }
+
+    const loadUserActivityBtn = document.getElementById('loadUserActivityButton');
+    if (loadUserActivityBtn) {
+        loadUserActivityBtn.addEventListener('click', fetchAndDisplayUserActivity);
+    }
     
     // Set default dates for historical analytics
     const today = new Date();
@@ -1410,11 +1458,11 @@ async function init() {
 
     await checkConnection();
     await loadDashboardStats();
-    await loadUsers();
-    await loadProfiles(); // This will now use getTranslation for default options
+    await loadUsers(); // This will now populate historicalUserSelect
+    await loadProfiles();
     await loadActiveSessions();
     await loadConfig();
-    setupDeleteByStatusDropdown(); // Populate #deleteByStatusSelect with translated options
+    setupDeleteByStatusDropdown();
     
     // Auto-refresh data every 60 seconds
     setInterval(() => {
@@ -1448,15 +1496,13 @@ async function apiCall(endpoint, options = {}) {
             headers['X-CSRFToken'] = csrfToken;
         } else {
             console.warn('CSRF token not found in meta tag. Requests that modify state might fail.');
-            // Optionally, you could prevent the request here or show an immediate error.
         }
     }
     
-    // Update options with potentially modified headers
     const fetchOptions = {
         ...options,
         headers: headers,
-        credentials: 'include' // Explicitly add this line
+        credentials: 'include'
     };
 
     try {
@@ -1464,18 +1510,13 @@ async function apiCall(endpoint, options = {}) {
         const contentType = response.headers.get("content-type");
         
         if (!response.ok) {
-            // Attempt to parse error as JSON, otherwise use text
             let errorPayload;
             if (contentType && contentType.indexOf("application/json") !== -1) {
-                try {
-                    errorPayload = await response.json();
-                } catch (e) {
-                    // If JSON parsing fails even if header says JSON, read as text.
-                    logger.error(`apiCall: Failed to parse JSON error response from ${endpoint} despite Content-Type. Error: ${e}`);
+                try { errorPayload = await response.json(); } catch (e) {
+                    logger.error(`apiCall: Failed to parse JSON error response from ${endpoint}. Error: ${e}`);
                     errorPayload = { message: (await response.text()).substring(0,500) || `HTTP error! status: ${response.status}` };
                 }
             } else {
-                 // If not JSON, capture the text response for the error message
                 const textResponse = await response.text();
                 logger.warn(`apiCall to ${endpoint} received non-JSON error response (type: ${contentType}). Body: ${textResponse.substring(0, 500)}...`);
                 errorPayload = { message: textResponse.substring(0,500) || `HTTP error! status: ${response.status}, non-JSON response.` };
@@ -1483,28 +1524,23 @@ async function apiCall(endpoint, options = {}) {
             throw new Error(errorPayload.message || `HTTP error! status: ${response.status}`);
         }
 
-        // If response.ok, we still must check content type before parsing
         if (contentType && contentType.indexOf("application/json") === -1) {
             const textResponse = await response.text();
             logger.error(`apiCall to ${endpoint} expected JSON but received ${contentType}. Response body: ${textResponse.substring(0, 500)}...`);
             throw new Error(`Expected JSON response from server for ${endpoint}, but received ${contentType}.`);
         }
         
-        // If we reach here, response is OK and content type indicates JSON (or no content type header, assume JSON)
         return await response.json();
     } catch (error) {
-        logger.error(`API Call Error to ${endpoint}:`, error); // Log the full error for debugging
-        // Check if it's a network error (fetch itself failed)
+        logger.error(`API Call Error to ${endpoint}:`, error);
         if (error.message.toLowerCase().includes('failed to fetch') || error.message.toLowerCase().includes('networkerror')) {
             showPersistentConnectionMessage(getTranslation('Network error or server is unreachable. Please check your connection and the server status. You may need to <a href="#" onclick="navigateToTab(\'settings\'); return false;">reconfigure settings</a> or refresh the page.'));
-            // Also update the top connection status indicator
             const statusEl = document.getElementById('connectionStatus');
             if (statusEl) {
                 statusEl.className = 'disconnected';
                 statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> ${getTranslation('Network Error')}</span>`;
             }
         } else {
-            // For other errors (e.g., HTTP errors from server response), use the global alert
             showAlert('globalAlert', 'danger', error.message || getTranslation('An unexpected error occurred.'));
         }
         return null;
@@ -1539,23 +1575,13 @@ async function handleChangePassword(e) {
     if (result && result.success) {
         showAlert('globalAlert', 'success', getTranslation(result.message || 'Admin password changed successfully. You may need to log in again with your new password if your session is invalidated.'));
         form.reset();
-        // Optionally, you could force a logout here or inform the user they might be logged out soon.
-        // For simplicity, we'll just show the message. The current session might still be valid
-        // until it expires or is explicitly terminated.
     } else if (result && result.message) {
         showAlert('globalAlert', 'danger', getTranslation(result.message));
-    } else {
-        // General error message if result or result.message is not available, handled by apiCall
     }
 }
 
 async function checkConnection(isInitialLoad = false) {
     const statusEl = document.getElementById('connectionStatus');
-    // Do not show global spinner for the initial, automatic checkConnection call.
-    // Only show for manual calls (e.g. from Test button in settings).
-    // The apiCall function itself handles the spinner, so we need a way to tell it.
-    // For now, assume apiCall's spinner is acceptable, or adjust apiCall to accept a noSpinner option.
-    // Let's assume the spinner shown by apiCall is fine for now.
     const result = await apiCall('/test-connection', { method: 'POST' });
 
     let isConnected = false;
@@ -1563,16 +1589,12 @@ async function checkConnection(isInitialLoad = false) {
         statusEl.className = 'connected';
         statusEl.innerHTML = `<i class="fas fa-check-circle"></i><span> ${result.message}</span>`;
         isConnected = true;
-        // Hide any persistent "go to settings" message if connection is now good.
         const persistentMessage = document.getElementById('persistentConnectionMessage');
         if (persistentMessage) persistentMessage.style.display = 'none';
-
     } else {
         statusEl.className = 'disconnected';
         const failureMessage = result ? result.message : getTranslation('Connection test failed. Router might be unreachable.');
         statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> ${failureMessage}</span>`;
-        
-        // Show a persistent message guiding to Settings, only if not already on settings page.
         if (document.getElementById('settings') && !document.getElementById('settings').classList.contains('active')) {
             showPersistentConnectionMessage(`Mikrotik router not connected. Please <a href="#" onclick="navigateToTab('settings'); return false;">configure settings</a>.`);
         }
@@ -1586,14 +1608,13 @@ function showPersistentConnectionMessage(message) {
     if (!msgDiv) {
         msgDiv = document.createElement('div');
         msgDiv.id = 'persistentConnectionMessage';
-        msgDiv.className = 'alert alert-warning'; // Use warning style
+        msgDiv.className = 'alert alert-warning';
         msgDiv.style.marginTop = '1rem';
         msgDiv.style.textAlign = 'center';
-        // Insert it after page-header
         const pageHeader = document.querySelector('.page-header');
         if (pageHeader && pageHeader.parentNode) {
             pageHeader.parentNode.insertBefore(msgDiv, pageHeader.nextSibling);
-        } else { // Fallback if page-header is not found
+        } else {
             document.querySelector('.main-content').prepend(msgDiv);
         }
     }
@@ -1602,58 +1623,39 @@ function showPersistentConnectionMessage(message) {
 }
 
 function updateUIAfterConnectionCheck(isConnected, isInitialLoad = false) {
-    // Selectors for elements to disable/enable
-    // This list might need to be expanded based on UI elements that interact with Mikrotik
     const mikrotikDependentElements = [
-        // User Tab
         '#userSearchInput', '#userFilterProfile', '#userFilterStatus',
-        ...document.querySelectorAll('#usersTable button'), // Refresh, edit, delete user buttons
-        ...document.querySelectorAll('#users .panel-header button'), // Refresh button in user list
-        ...document.querySelectorAll('#users .btn-success, #users .btn-primary, #users .btn-danger'), // Export buttons
-
-        // Create Tab forms and buttons
+        ...document.querySelectorAll('#usersTable button'),
+        ...document.querySelectorAll('#users .panel-header button'),
+        ...document.querySelectorAll('#users .btn-success, #users .btn-primary, #users .btn-danger'),
         '#createUserForm input', '#createUserForm select', '#createUserForm button',
         '#bulkCreateUserForm input', '#bulkCreateUserForm select', '#bulkCreateUserForm button',
         '#exportVouchersHTMLButton', '#exportVouchersPDFButton',
-
-        // Active Sessions Tab
-        ...document.querySelectorAll('#sessionsTable button'), // Disconnect buttons
-        ...document.querySelectorAll('#sessions .panel-header button'), // Refresh button
-
-        // Analytics Tab
-        '#refreshAnalyticsButton', // Refresh button for analytics
-
-        // Maintenance Tab (excluding profile management if some actions are local)
-        // Profiles might be manageable (view cached) even if offline, but add/edit/delete needs connection.
-        // For simplicity, disabling all profile table actions and add button.
-        ...document.querySelectorAll('#profilesTable button'), // Edit, delete profile
-        ...document.querySelectorAll('#maintenance .panel:nth-child(1) .btn-success'), // Add profile button
-        ...document.querySelectorAll('#maintenance .panel:nth-child(2) .btn-danger'), // Delete expired users
-        ...document.querySelectorAll('#maintenance .panel:nth-child(3) .btn-danger'), // Delete by profile
-        ...document.querySelectorAll('#maintenance .panel:nth-child(4) .btn-danger'), // Delete by status
-        
-        // Settings tab - Router connection part. Test button should be enabled. Save can be enabled.
-        // '#configForm input', // Keep these enabled for user to fill
-        // '#configForm button[type="submit"]', // Save button in settings
-        // Test button in settings should always be enabled:
-        // document.querySelector('#configForm button[onclick="testConnection()"]').disabled = false;
+        ...document.querySelectorAll('#sessionsTable button'),
+        ...document.querySelectorAll('#sessions .panel-header button'),
+        '#refreshAnalyticsButton',
+        ...document.querySelectorAll('#profilesTable button'),
+        ...document.querySelectorAll('#maintenance .panel:nth-child(1) .btn-success'),
+        ...document.querySelectorAll('#maintenance .panel:nth-child(2) .btn-danger'),
+        ...document.querySelectorAll('#maintenance .panel:nth-child(3) .btn-danger'),
+        ...document.querySelectorAll('#maintenance .panel:nth-child(4) .btn-danger'),
+        '#startRealtimeTrafficButton', '#realtimeInterfaceName', // Realtime traffic controls
+        '#refreshRouterStatusButton', // Router health refresh
+        '#loadUserActivityButton', '#historicalUserSelect' // User activity controls
     ];
 
     mikrotikDependentElements.forEach(selector => {
         if (typeof selector === 'string') {
             const element = document.querySelector(selector);
             if (element) element.disabled = !isConnected;
-        } else { // If it's already an element (from querySelectorAll)
+        } else {
             selector.disabled = !isConnected;
         }
     });
 
-    // Special handling for elements that should always be enabled or based on other conditions
-    document.querySelector('#configForm button[onclick="testConnection()"]').disabled = false; // Always enable test button
-    document.querySelector('#configForm button[type="submit"]').disabled = false; // Always enable save config button
+    document.querySelector('#configForm button[onclick="testConnection()"]').disabled = false;
+    document.querySelector('#configForm button[type="submit"]').disabled = false;
 
-    // If not connected and it's the initial load, clear dynamic data areas
-    // or show "not connected" messages.
     if (!isConnected && isInitialLoad) {
         document.getElementById('totalUsers').textContent = '-';
         document.getElementById('activeSessions').textContent = '-';
@@ -1662,29 +1664,24 @@ function updateUIAfterConnectionCheck(isConnected, isInitialLoad = false) {
         document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
         const analyticsTotalDataEl = document.getElementById('analyticsTotalData');
         if (analyticsTotalDataEl) analyticsTotalDataEl.textContent = getTranslation('Total Data Transferred: Not Connected');
-        // Clear charts or show placeholder
         if (profileUsageChartInstance) profileUsageChartInstance.destroy();
         if (topUsersChartInstance) topUsersChartInstance.destroy();
-         // Analytics specific message
         const profileCtx = document.getElementById('profileUsageChart').getContext('2d');
         const topUsersCtx = document.getElementById('topUsersChart').getContext('2d');
-        profileCtx.clearRect(0,0,profileCtx.canvas.width, profileCtx.canvas.height); // Clear canvas
-        topUsersCtx.clearRect(0,0,topUsersCtx.canvas.width, topUsersCtx.canvas.height); // Clear canvas
-        // Optionally, draw a "Not Connected" message on canvas
+        profileCtx.clearRect(0,0,profileCtx.canvas.width, profileCtx.canvas.height);
+        topUsersCtx.clearRect(0,0,topUsersCtx.canvas.width, topUsersCtx.canvas.height);
     }
 }
 
 
 async function loadDashboardStats() {
     const data = await apiCall('/dashboard-stats');
-    if (data) { // apiCall returns null on connection error to Mikrotik via service layer
+    if (data) {
         document.getElementById('totalUsers').textContent = data.total_users !== undefined ? data.total_users : '-';
         document.getElementById('activeSessions').textContent = data.active_sessions !== undefined ? data.active_sessions : '-';
     } else {
-        // If data is null (likely Mikrotik connection issue), ensure UI reflects this
         document.getElementById('totalUsers').textContent = '-';
         document.getElementById('activeSessions').textContent = '-';
-        // A more specific message might be set by checkConnection's UI update
     }
 }
 
@@ -1711,40 +1708,31 @@ async function loadUsers(silent = false) {
     const data = await apiCall('/users');
     if (data && data.users) {
         currentUsers = data.users;
-        // If no search/filter is active and the list is empty, show the "No users on router" empty state
-        if (currentUsers.length === 0 && 
-            !document.getElementById('userSearchInput').value && 
-            !document.getElementById('userFilterProfile').value && 
-            !document.getElementById('userFilterStatus').value) {
-            
-            const emptyHTML = `
-                <tr class="empty-state-row">
-                    <td colspan="9" class="empty-state-td">
-                        <div class="empty-state-container">
-                            <div class="empty-state-icon"><i class="fas fa-ghost"></i></div>
-                            <h5 class="empty-state-title">No Hotspot Users Found</h5>
-                            <p class="empty-state-text">There are currently no users configured on your Mikrotik router. You can add some in the 'Create' section!</p>
-                            <button class="btn btn-primary empty-state-action" onclick="document.querySelector('.nav-link[data-tab=\\'create\\']').click();">
-                                <i class="fas fa-user-plus"></i> Create User
-                            </button>
-                        </div>
-                    </td>
-                </tr>`;
-            tbody.innerHTML = emptyHTML;
-        } else {
-            filterAndDisplayUsers(); // Otherwise, filter and display (which handles "no match" itself)
+        filterAndDisplayUsers();
+
+        const userSelect = document.getElementById('historicalUserSelect');
+        if (userSelect) {
+            const currentSelectedUser = userSelect.value;
+            userSelect.innerHTML = `<option value="">${getTranslation('-- Select User --')}</option>`;
+            currentUsers.forEach(user => {
+                const option = new Option(user.name, user.name);
+                userSelect.add(option);
+            });
+            if (currentUsers.some(user => user.name === currentSelectedUser)) {
+                userSelect.value = currentSelectedUser;
+            } else {
+                 userSelect.value = "";
+            }
         }
     } else if (data === null && document.querySelector('#connectionStatus').classList.contains('connected')) {
-        // Data is null but connection status was 'connected' - implies an issue during API call not related to initial connection
         tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Error loading users. Please try again.')}</td></tr>`;
+        const userSelect = document.getElementById('historicalUserSelect');
+        if (userSelect) {
+            userSelect.innerHTML = `<option value="">${getTranslation('-- Select User --')}</option><option value="" disabled>${getTranslation('Could not load users')}</option>`;
+        }
     } else if (!document.querySelector('#connectionStatus').classList.contains('connected')) {
-        // If not connected, filterAndDisplayUsers might not be called or might show "no users match"
-        // Ensure a clear message about connection is shown if users couldn't be loaded due to it.
-        // This is partly redundant with the check at the start of the function.
         tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Not connected to Mikrotik router. Cannot load users.')}</td></tr>`;
     }
-    // If data is not null but data.users is missing, it's an unexpected response.
-    // The general error from apiCall might cover this, or a specific message here.
 }
 
 
@@ -1755,7 +1743,6 @@ async function loadProfiles() {
     ];
     if (!document.querySelector('#connectionStatus').classList.contains('connected')) {
         document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Not connected to Mikrotik router. Cannot load profiles.')} <a href="#" onclick="navigateToTab('settings'); return false;">Configure Settings</a>.</td></tr>`;
-        // Clear profile dropdowns or set a "not connected" option
         profilesSelects.forEach(selId => {
             const select = document.querySelector(selId);
             if (select) {
@@ -1765,8 +1752,8 @@ async function loadProfiles() {
                 select.innerHTML = `<option value="">${getTranslation(defaultOptionKey)}</option><option value="" disabled>${getTranslation('Not Connected')}</option>`;
             }
         });
-        currentProfiles = []; // Ensure currentProfiles is empty
-        displayProfiles(); // Update table display (will show "not connected")
+        currentProfiles = [];
+        displayProfiles();
         return;
     }
 
@@ -1788,28 +1775,27 @@ async function loadProfiles() {
                 select.innerHTML = `<option value="">${getTranslation(selConfig.defaultTextKey)}</option>`;
                 currentProfiles.forEach(p => select.add(new Option(p.name, p.name)));
                 if(currentVal && currentProfiles.some(p => p.name === currentVal)) select.value = currentVal;
-                else select.value = ""; // Reset if previous value not in new list
+                else select.value = "";
             }
         });
         displayProfiles(); 
     } else {
-        // Handle case where data is null (connection issue) or data.profiles is missing
         document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Could not load profiles.')}</td></tr>`;
-        currentProfiles = []; // Ensure currentProfiles is empty
-        displayProfiles(); // Update table display (will show "no profiles found")
+        currentProfiles = [];
+        displayProfiles();
     }
 }
 
 function setupDeleteByStatusDropdown() {
     const select = document.getElementById('deleteByStatusSelect');
-    if (select) { // Ensure this select is populated with translated options
+    if (select) {
         const currentVal = select.value;
         select.innerHTML = `
             <option value="">${getTranslation('-- Select Status --')}</option>
             <option value="active">${getTranslation('Active Users')}</option>
             <option value="disabled">${getTranslation('Disabled Users')}</option>
         `;
-        if(currentVal) select.value = currentVal; // Preserve selection if valid
+        if(currentVal) select.value = currentVal;
     }
 }
 
@@ -1823,7 +1809,6 @@ function updateStaticTranslatedText() {
         deleteByStatusButton.innerHTML = `<i class="fas fa-user-slash"></i> ${getTranslation('Delete Users by Status')}`;
     }
 
-    // Also update labels for these sections
     const deleteByProfileLabel = document.querySelector('label[for="deleteByProfileSelect"]');
     if (deleteByProfileLabel) {
         deleteByProfileLabel.textContent = getTranslation('Select Profile to Delete Users From:');
@@ -1833,36 +1818,26 @@ function updateStaticTranslatedText() {
         deleteByStatusLabel.textContent = getTranslation('Select User Status to Delete:');
     }
     
-    // Update panel headers in Maintenance tab for the new sections
-    // This requires finding them more robustly if more panels are added.
     const maintenanceTab = document.getElementById('maintenance');
     if (maintenanceTab) {
         const panels = maintenanceTab.querySelectorAll('.panel');
-        // Update "Delete Users by Profile" panel header
         if (panels.length > 2 && panels[2].querySelector('h3')) { 
             panels[2].querySelector('h3').textContent = getTranslation('Delete Users by Profile');
         }
-        // Update "Delete Users by Active Status" panel header
         if (panels.length > 3 && panels[3].querySelector('h3')) { 
             panels[3].querySelector('h3').textContent = getTranslation('Delete Users by Active Status');
         }
     }
-     // Ensure other static texts are also updated if any were missed by dynamic updates
-     // e.g. sidebar items, modal titles (though they are often set dynamically)
     document.querySelectorAll('.sidebar-nav a span').forEach(span => {
-        const key = span.parentElement.dataset.tab; // Assuming tab name can serve as a key or part of it
-        if(key){ // Example: if tab 'dashboard' has span 'Dashboard'
-             const translatedText = getTranslation(span.textContent); // Try to translate existing text
+        const key = span.parentElement.dataset.tab;
+        if(key){
+             const translatedText = getTranslation(span.textContent);
              if(translatedText !== span.textContent) span.textContent = translatedText;
         }
     });
-    // Page title is set dynamically on tab change, so no need to update it here.
 }
 
 function setupStaticTranslations() {
-    // This function is called before translations are loaded.
-    // Its purpose would be to set up elements if they depended on structure, not text.
-    // Text updates should happen in updateStaticTranslatedText AFTER translations are loaded.
 }
 
 async function loadActiveSessions() {
@@ -1936,13 +1911,11 @@ async function loadConfig() {
 }
 
 function updateFeatureAvailabilityUI() {
-    // For "Create" tab -> Batch Voucher Generation -> PDF Export button
     const bulkPdfButton = document.getElementById('exportVouchersPDFButton');
     if (bulkPdfButton) {
         if (!featureFlags.pdf_export) {
             bulkPdfButton.disabled = true;
             bulkPdfButton.title = getTranslation('PDF export is not available. Server may be missing dependencies.');
-            // Optionally add a small text indicator
             let indicator = document.getElementById('bulkPdfIndicator');
             if (!indicator) {
                 indicator = document.createElement('small');
@@ -1960,23 +1933,18 @@ function updateFeatureAvailabilityUI() {
         }
     }
 
-    // For "Users" tab -> Export Users -> PDF Vouchers button
-    // This is a bit trickier as the button is generic: onclick="triggerExport('pdf_voucher')"
-    // We can disable it or change its appearance.
     const usersTabPdfExportButton = document.querySelector('#users .panel button[onclick="triggerExport(\'pdf_voucher\')"]');
     if (usersTabPdfExportButton) {
         if (!featureFlags.pdf_export) {
             usersTabPdfExportButton.disabled = true;
             usersTabPdfExportButton.style.opacity = '0.5';
             usersTabPdfExportButton.title = getTranslation('PDF voucher export is not available. Server may be missing dependencies.');
-             // Optionally add a small text indicator
             let indicator = document.getElementById('usersTabPdfIndicator');
             if (!indicator) {
                 indicator = document.createElement('small');
                 indicator.id = 'usersTabPdfIndicator';
-                indicator.style.marginLeft = '5px'; // Adjust as needed
+                indicator.style.marginLeft = '5px';
                 indicator.style.color = 'var(--theme-text-secondary)';
-                // Insert after the button, or find a suitable place in the layout
                 usersTabPdfExportButton.parentNode.insertBefore(indicator, usersTabPdfExportButton.nextSibling);
             }
             indicator.textContent = getTranslation('(PDF export disabled)');
@@ -1988,10 +1956,6 @@ function updateFeatureAvailabilityUI() {
             if (indicator) indicator.textContent = '';
         }
     }
-
-    // QR Code availability could be indicated near hotspotLoginUrl in settings, or where QR codes are expected.
-    // For now, the backend handles QR code omission if the library is missing.
-    // A message about QR codes is already shown by exportVouchersHTMLButton if hotspotLoginUrl is missing.
 }
 
 
@@ -2006,10 +1970,8 @@ function filterAndDisplayUsers() {
         const statusMatch = (status === '') || (status === 'active' && !isDisabled) || (status === 'disabled' && isDisabled);
         const profileMatch = (profile === '') || (user.profile === profile);
         
-        // Robust handling for searchMatch
         const userNameString = typeof user.name === 'string' ? user.name : '';
         const userCommentString = typeof user.comment === 'string' ? user.comment : '';
-        // 'search' is already toLowerCase() from where it's defined.
         const searchMatch = (userNameString.toLowerCase().includes(search) || 
                              (user.comment && userCommentString.toLowerCase().includes(search)));
         return statusMatch && profileMatch && searchMatch;
@@ -2130,7 +2092,7 @@ async function handleBulkCreateUsers(e) {
         profile: document.getElementById('bulkProfile').value,
         'limit-uptime': document.getElementById('bulkTimeLimit').value || null,
         'limit-bytes-total': document.getElementById('bulkDataLimit').value ? parseInt(document.getElementById('bulkDataLimit').value) * 1024 * 1024 : null,
-        comment_prefix: document.getElementById('bulkCommentPrefix').value, // This is the batch name/comment
+        comment_prefix: document.getElementById('bulkCommentPrefix').value,
         username_prefix: document.getElementById('bulkUsernamePrefix').value,
         username_length: parseInt(document.getElementById('bulkUsernameLength').value),
         username_charset: document.getElementById('bulkUsernameCharset').value,
@@ -2143,34 +2105,31 @@ async function handleBulkCreateUsers(e) {
     const resultDisplayDiv = document.getElementById('bulkCreateResultDisplay');
     const credentialsTextArea = document.getElementById('bulkCreateCredentials');
 
-    // Always hide buttons and result display initially on new submission
     if(exportHTMLBtn) exportHTMLBtn.style.display = 'none';
     if(exportPDFBtn) exportPDFBtn.style.display = 'none';
     resultDisplayDiv.style.display = 'none';
     credentialsTextArea.value = '';
-    lastGeneratedBatchCredentials = []; // Clear previous batch
+    lastGeneratedBatchCredentials = [];
 
 
     const result = await apiCall('/bulk-create-users', { method: 'POST', body: JSON.stringify(payload) });
     if (result) {
         showAlert('globalAlert', result.success ? 'success' : 'danger', result.message);
         if (result.created_credentials && result.created_credentials.length > 0) {
-            lastGeneratedBatchCredentials = result.created_credentials; // Store for printing/viewing
+            lastGeneratedBatchCredentials = result.created_credentials;
             resultDisplayDiv.style.display = 'block';
             credentialsTextArea.value = result.created_credentials
                 .map(c => `Username: ${c.username}\tPassword: ${c.password}`)
                 .join('\n');
             if(exportHTMLBtn) exportHTMLBtn.style.display = 'inline-flex'; 
             if(exportPDFBtn) exportPDFBtn.style.display = 'inline-flex'; 
-            await loadUsers(); // Refresh user list as new users were added
-            await loadDashboardStats(); // Refresh stats
+            await loadUsers();
+            await loadDashboardStats();
         } else {
-            // Ensure buttons are hidden if no credentials or error
             if(exportHTMLBtn) exportHTMLBtn.style.display = 'none';
             if(exportPDFBtn) exportPDFBtn.style.display = 'none';
         }
     } else {
-        // If apiCall returns null (e.g. network error), ensure buttons and results area are hidden
         if(exportHTMLBtn) exportHTMLBtn.style.display = 'none';
         if(exportPDFBtn) exportPDFBtn.style.display = 'none';
         resultDisplayDiv.style.display = 'none'; 
@@ -2256,10 +2215,9 @@ async function deleteExpiredUsers() {
         showAlert('globalAlert', 'success', result.message + (result.deleted_count ? ` Deleted ${result.deleted_count} user(s).` : ''));
         await loadUsers();
         await loadDashboardStats();
-    } else if (result) { // API call was made, but operation wasn't successful (e.g. success:false from backend)
+    } else if (result) {
         showAlert('globalAlert', 'warning', result.message || getTranslation('Operation failed, no users deleted.'));
     }
-    // If result is null (apiCall failed due to network etc.), apiCall itself shows an alert.
 }
 
 async function handleDeleteUsersByProfile() {
@@ -2278,7 +2236,6 @@ async function handleDeleteUsersByProfile() {
     const result = await apiCall(`/users/delete-by-profile/${encodeURIComponent(profileName)}`, { method: 'DELETE' });
 
     if (result && result.success) {
-        // Assuming result.message is already translated by the backend
         showAlert('globalAlert', 'success', result.message || getTranslation('Successfully processed users for profile {0}. Deleted {1} user(s).', profileName, result.deleted_count));
         await loadUsers();
         await loadDashboardStats();
@@ -2289,7 +2246,7 @@ async function handleDeleteUsersByProfile() {
 
 async function handleDeleteUsersByStatus() {
     const statusSelect = document.getElementById('deleteByStatusSelect');
-    const status = statusSelect.value; // 'active' or 'disabled'
+    const status = statusSelect.value;
 
     if (!status) {
         showAlert('globalAlert', 'warning', getTranslation('Please select a user status to delete.'));
@@ -2397,10 +2354,8 @@ function showGlobalSpinner(show) {
     if (show) {
         statusEl.innerHTML = '<span class="loading-spinner"></span>';
     } else {
-        // Delay hiding spinner to prevent flickering on fast calls
         spinnerTimeout = setTimeout(() => {
             if (statusEl.innerHTML.includes('spinner')) {
-                // If it's still a spinner, default to disconnected
                 statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> Disconnected</span>`;
                 statusEl.className = 'disconnected';
             }
@@ -2432,7 +2387,6 @@ async function loadAnalyticsData() {
     const tooltipTitleColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
     const tooltipBodyColor = isDarkMode ? '#ecf0f1' : '#2c3e50';
     
-    // Render Profile Usage Chart (Pie)
     const profileCtx = document.getElementById('profileUsageChart').getContext('2d');
     if (profileUsageChartInstance) {
         profileUsageChartInstance.destroy();
@@ -2440,7 +2394,6 @@ async function loadAnalyticsData() {
     const profileData = data.data_usage_by_profile || {};
     const totalProfileUsage = Object.values(profileData).reduce((sum, val) => sum + val, 0);
 
-    // Enhanced color palette for Pie chart - works well on light/dark
     const pieChartColors = [
         '#1abc9c', '#3498db', '#9b59b6', '#f1c40f', '#e74c3c', 
         '#2ecc71', '#e67e22', '#34495e', '#7f8c8d', '#16a085',
@@ -2448,9 +2401,9 @@ async function loadAnalyticsData() {
     ];
 
     if (Object.keys(profileData).length === 0) {
-        profileChartEmptyState.style.display = 'flex'; // Show empty state
+        profileChartEmptyState.style.display = 'flex';
     } else {
-        profileChartEmptyState.style.display = 'none'; // Hide empty state
+        profileChartEmptyState.style.display = 'none';
         profileUsageChartInstance = new Chart(profileCtx, {
             type: 'pie',
             data: {
@@ -2468,9 +2421,8 @@ async function loadAnalyticsData() {
                 plugins: {
                     legend: {
                         labels: { color: labelColor },
-                        onClick: (e, legendItem, legend) => { // Default behavior + update
+                        onClick: (e, legendItem, legend) => {
                             Chart.defaults.plugins.legend.onClick(e, legendItem, legend);
-                            // Could add custom logic here if needed after a legend item click
                         }
                     },
                     tooltip: {
@@ -2491,7 +2443,6 @@ async function loadAnalyticsData() {
         });
     }
 
-    // Render Top 10 Users Chart (Bar)
     const topUsersCtx = document.getElementById('topUsersChart').getContext('2d');
     if (topUsersChartInstance) {
         topUsersChartInstance.destroy();
@@ -2507,9 +2458,9 @@ async function loadAnalyticsData() {
                 labels: topUsers.map(u => u.name),
                 datasets: [{
                     label: 'Total Data Usage',
-                    data: topUsers.map(u => u.total_data), // Assuming topUsers elements have bytes_in, bytes_out
-                    bytesIn: topUsers.map(u => u.bytes_in || 0), // Store for tooltip
-                    bytesOut: topUsers.map(u => u.bytes_out || 0), // Store for tooltip
+                    data: topUsers.map(u => u.total_data),
+                    bytesIn: topUsers.map(u => u.bytes_in || 0),
+                    bytesOut: topUsers.map(u => u.bytes_out || 0),
                     backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#1abc9c',
                     hoverBackgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--primary-color-darker').trim() || '#16a085'
                 }]
@@ -2527,7 +2478,7 @@ async function loadAnalyticsData() {
                         }
                     },
                     x: {
-                        grid: { display: false }, // Often X grid is not needed for bar charts
+                        grid: { display: false },
                         ticks: { color: labelColor }
                     }
                 },
@@ -2559,7 +2510,6 @@ async function loadAnalyticsData() {
     }
 }
 
-// Listen for theme changes to update chart options and re-render
 document.addEventListener('themeChanged', function(e) {
     if (analyticsDataLoaded && document.getElementById('analytics').classList.contains('active')) {
         const isDark = document.body.classList.contains('dark-mode');
@@ -2589,6 +2539,35 @@ document.addEventListener('themeChanged', function(e) {
             topUsersChartInstance.update();
         }
     }
+     // Update realtime traffic chart theme if it exists and is visible
+    if (realtimeTrafficChartInstance && document.getElementById('realtimeTrafficPanel').offsetParent !== null) {
+        // This check for offsetParent is a way to see if the panel (and thus chart) is visible
+        // Re-initialize or update options directly
+        // For simplicity, re-initializing might be easier if colors are deeply nested
+        // This assumes startTrafficMonitoring or a dedicated theme update function for this chart exists
+        // For now, let's assume initializeRealtimeTrafficChart correctly grabs current theme colors.
+        // If the chart is active, we might need to re-initialize it or update its options carefully.
+        // This part needs more robust handling if theme changes while chart is live.
+        // A simple approach: if monitoring, stop, re-init chart, start. Or update options directly.
+        if (trafficPollIntervalId !== null) { // If monitoring is active
+            const currentInterface = document.getElementById('realtimeInterfaceName').value;
+            if (currentInterface) {
+                 // Re-initialize with current theme
+                initializeRealtimeTrafficChart();
+                // Data will be repopulated by subsequent fetchAndDisplayTraffic calls.
+                // To make it smoother, one might store current chart data, re-init, then re-populate.
+            }
+        }
+    }
+    // Similar logic for router health gauges if they are active and need theme updates
+    if (document.getElementById('routerStatusPanel').offsetParent !== null) {
+        const cpuLoad = routerCpuLoadChartInstance ? routerCpuLoadChartInstance.data.datasets[0].data[0] : 0;
+        const memUsage = routerMemoryUsageChartInstance ? routerMemoryUsageChartInstance.data.datasets[0].data[0] : 0;
+        if (routerCpuLoadChartInstance) initRouterCpuLoadChart('routerCpuLoadChart', cpuLoad);
+        if (routerMemoryUsageChartInstance) initRouterMemoryUsageChart('routerMemoryUsageChart', memUsage);
+    }
+
+
 });
 
 
@@ -2607,20 +2586,16 @@ function formatBitRate(bytesPerSecond) {
     if (bytesPerSecond === 0) return '0 Kbps';
 
     const bitsPerSecond = bytesPerSecond * 8;
-    const k = 1000; // Network speeds use 1000 for kilo, mega, giga
+    const k = 1000;
     const sizes = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
 
-    if (bitsPerSecond < 1) return `${bitsPerSecond.toFixed(0)} bps`; // Should not happen if bytesPerSecond > 0
+    if (bitsPerSecond < 1) return `${bitsPerSecond.toFixed(0)} bps`;
 
     const i = Math.floor(Math.log10(bitsPerSecond) / Math.log10(k));
-
-    // Ensure 'i' is within the bounds of the 'sizes' array
     const safeIndex = Math.min(i, sizes.length - 1);
-
     let rate = bitsPerSecond / Math.pow(k, safeIndex);
 
-    // For bps, typically no decimal. For Kbps, Mbps, etc., 1 or 2 decimal places.
-    if (safeIndex === 0) { // bps
+    if (safeIndex === 0) {
         rate = rate.toFixed(0);
     } else {
         rate = rate.toFixed(2);
@@ -2631,9 +2606,8 @@ function formatBitRate(bytesPerSecond) {
 async function fetchAndDisplayTraffic() {
     const interfaceNameInput = document.getElementById('realtimeInterfaceName');
     if (!interfaceNameInput || !interfaceNameInput.value) {
-        // This case should ideally be prevented by disabling input or stopping poll if name is cleared
         logger.warn("fetchAndDisplayTraffic: Interface name is empty.");
-        stopTrafficMonitoring(); // Stop if no interface name
+        stopTrafficMonitoring();
         return;
     }
     const interfaceName = interfaceNameInput.value.trim();
@@ -2643,7 +2617,7 @@ async function fetchAndDisplayTraffic() {
 
         if (result && result.success && result.data) {
             const currentStats = result.data;
-            const now = new Date(currentStats.timestamp); // Assuming ISO string from backend
+            const now = new Date(currentStats.timestamp);
             const currentRxBytes = parseInt(currentStats['rx-byte'], 10);
             const currentTxBytes = parseInt(currentStats['tx-byte'], 10);
 
@@ -2655,20 +2629,19 @@ async function fetchAndDisplayTraffic() {
                     const rxBytesDelta = currentRxBytes - lastTrafficStats[interfaceName].rxByte;
                     const txBytesDelta = currentTxBytes - lastTrafficStats[interfaceName].txByte;
 
-                    const rxRateBps = (rxBytesDelta >= 0 ? rxBytesDelta : 0) / timeDeltaSeconds; // Bytes per second
-                    const txRateBps = (txBytesDelta >= 0 ? txBytesDelta : 0) / timeDeltaSeconds; // Bytes per second
+                    const rxRateBps = (rxBytesDelta >= 0 ? rxBytesDelta : 0) / timeDeltaSeconds;
+                    const txRateBps = (txBytesDelta >= 0 ? txBytesDelta : 0) / timeDeltaSeconds;
 
                     document.getElementById('realtimeRxRate').textContent = formatBitRate(rxRateBps);
                     document.getElementById('realtimeTxRate').textContent = formatBitRate(txRateBps);
 
-                    // Update chart
                     if (realtimeTrafficChartInstance) {
-                        const MAX_DATA_POINTS = 20; // Show last 20 points (e.g., 1 minute at 3s interval)
+                        const MAX_DATA_POINTS = 20;
                         const nowLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
                         realtimeTrafficChartInstance.data.labels.push(nowLabel);
-                        realtimeTrafficChartInstance.data.datasets[0].data.push(rxRateBps); // Download
-                        realtimeTrafficChartInstance.data.datasets[1].data.push(txRateBps); // Upload
+                        realtimeTrafficChartInstance.data.datasets[0].data.push(rxRateBps);
+                        realtimeTrafficChartInstance.data.datasets[1].data.push(txRateBps);
 
                         if (realtimeTrafficChartInstance.data.labels.length > MAX_DATA_POINTS) {
                             realtimeTrafficChartInstance.data.labels.shift();
@@ -2680,11 +2653,9 @@ async function fetchAndDisplayTraffic() {
                     }
                 }
             } else {
-                // First data point for this interface, display 0 rates and prime the chart if needed
                 document.getElementById('realtimeRxRate').textContent = formatBitRate(0);
                 document.getElementById('realtimeTxRate').textContent = formatBitRate(0);
                 if (realtimeTrafficChartInstance && realtimeTrafficChartInstance.data.labels.length === 0) {
-                    // Add an initial "zero" point to the chart if it's empty
                     const initialLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                     realtimeTrafficChartInstance.data.labels.push(initialLabel);
                     realtimeTrafficChartInstance.data.datasets[0].data.push(0);
@@ -2696,17 +2667,17 @@ async function fetchAndDisplayTraffic() {
             lastTrafficStats[interfaceName] = {
                 rxByte: currentRxBytes,
                 txByte: currentTxBytes,
-                timestamp: currentStats.timestamp // Store the ISO string timestamp
+                timestamp: currentStats.timestamp
             };
         } else {
             const errorMessage = result ? getTranslation(result.message) : getTranslation('Failed to fetch traffic stats.');
             showAlert('globalAlert', 'danger', `${getTranslation('Error for interface')} "${interfaceName}": ${errorMessage}`);
-            stopTrafficMonitoring(); // Stop polling on error
+            stopTrafficMonitoring();
         }
     } catch (error) {
         logger.error("Error in fetchAndDisplayTraffic:", error);
         showAlert('globalAlert', 'danger', `${getTranslation('Network or server error while fetching traffic for')} "${interfaceName}".`);
-        stopTrafficMonitoring(); // Stop polling on significant error
+        stopTrafficMonitoring();
     }
 }
 
@@ -2722,30 +2693,25 @@ function startTrafficMonitoring() {
         return;
     }
 
-    if (trafficPollIntervalId !== null) { // Already monitoring, so this call means stop
+    if (trafficPollIntervalId !== null) {
         stopTrafficMonitoring();
         return;
     }
 
-    // Clear previous stats for this interface before starting
     lastTrafficStats[interfaceName] = null;
     document.getElementById('realtimeRxRate').textContent = getTranslation('Loading...');
     document.getElementById('realtimeTxRate').textContent = getTranslation('Loading...');
 
-    initializeRealtimeTrafficChart(); // Initialize/Re-initialize the chart
+    initializeRealtimeTrafficChart();
 
-    // Fetch immediately, then set interval
     fetchAndDisplayTraffic().then(() => {
-        // Only set interval if the first fetch was successful (or at least didn't immediately call stopTrafficMonitoring)
-        if (trafficPollIntervalId === null) { // Check if stopTrafficMonitoring was called by fetchAndDisplayTraffic
+        if (trafficPollIntervalId === null) {
              trafficPollIntervalId = setInterval(fetchAndDisplayTraffic, TRAFFIC_POLL_INTERVAL);
              if (startButtonText) startButtonText.textContent = getTranslation('Stop Monitoring');
              if (startButtonIcon) { startButtonIcon.classList.remove('fa-play'); startButtonIcon.classList.add('fa-stop');}
              interfaceNameInput.disabled = true;
         }
     }).catch(() => {
-        // Error handled in fetchAndDisplayTraffic, which should call stopTrafficMonitoring
-        // Ensure UI is reset if initial fetch fails badly and stop was called.
         if (startButtonText) startButtonText.textContent = getTranslation('Start Monitoring');
         if (startButtonIcon) { startButtonIcon.classList.remove('fa-stop'); startButtonIcon.classList.add('fa-play');}
         interfaceNameInput.disabled = false;
@@ -2769,19 +2735,13 @@ function stopTrafficMonitoring() {
     if (startButtonIcon) { startButtonIcon.classList.remove('fa-stop'); startButtonIcon.classList.add('fa-play');}
     if(interfaceNameInput) interfaceNameInput.disabled = false;
 
-    // Clear the chart data when stopping
     if (realtimeTrafficChartInstance) {
         realtimeTrafficChartInstance.data.labels = [];
         realtimeTrafficChartInstance.data.datasets.forEach(dataset => {
             dataset.data = [];
         });
         realtimeTrafficChartInstance.update();
-        // Optionally, destroy the chart instance if preferred, to be recreated on next start
-        // realtimeTrafficChartInstance.destroy();
-        // realtimeTrafficChartInstance = null;
     }
-    // lastTrafficStats for the specific interface can be cleared if desired, or kept for next start.
-    // For simplicity, we'll let it be overwritten on next start.
 }
 
 function initRouterCpuLoadChart(targetId, percentage) {
@@ -2803,32 +2763,29 @@ function initRouterCpuLoadChart(targetId, percentage) {
             datasets: [{
                 data: [percentage, 100 - percentage],
                 backgroundColor: [primaryColor, gaugeBackgroundColor],
-                borderColor: [primaryColor, gaugeBackgroundColor], // Or set to transparent/panel background
+                borderColor: [primaryColor, gaugeBackgroundColor],
                 borderWidth: 1,
-                circumference: 360, // Full circle
+                circumference: 360,
                 rotation: 0,
             }]
         },
         options: {
             responsive: true,
-            maintainAspectRatio: true, // Keep it square based on width/height attributes of canvas
-            cutout: '75%', // Adjust for thickness of the gauge
+            maintainAspectRatio: true,
+            cutout: '75%',
             animation: {
                 duration: 400
             },
             plugins: {
                 legend: {
-                    display: false // No legend for a simple gauge
+                    display: false
                 },
                 tooltip: {
-                    enabled: false // No tooltips for a simple gauge
+                    enabled: false
                 },
-                // Custom plugin to draw text in the middle (optional, can be done with HTML overlay too)
-                // For simplicity, we'll update a separate HTML span for now.
             }
         }
     });
-    // Update the text span separately
     const cpuLoadTextEl = document.getElementById('routerCpuLoadText');
     if (cpuLoadTextEl) cpuLoadTextEl.textContent = `${percentage}%`;
 }
@@ -2875,7 +2832,6 @@ function initRouterMemoryUsageChart(targetId, percentage) {
             }
         }
     });
-     // Update the text span separately (will be done in fetchAndDisplayRouterHealth with full text)
 }
 
 
@@ -2901,7 +2857,7 @@ function initializeRealtimeTrafficChart() {
     realtimeTrafficChartInstance = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: [], // To be populated with timestamps or relative time
+            labels: [],
             datasets: [
                 {
                     label: getTranslation('Download Rate') || 'Download Rate',
@@ -2929,11 +2885,11 @@ function initializeRealtimeTrafficChart() {
             responsive: true,
             maintainAspectRatio: false,
             animation: {
-                duration: 200 // Faster animation for live feel
+                duration: 200
             },
             scales: {
                 x: {
-                    type: 'category', // Or 'time' if using actual time objects
+                    type: 'category',
                     ticks: {
                         color: labelColor,
                         maxRotation: 0,
@@ -2941,7 +2897,7 @@ function initializeRealtimeTrafficChart() {
                     },
                     grid: {
                         color: gridColor,
-                        display: false // Hide x-axis grid lines for cleaner look
+                        display: false
                     }
                 },
                 y: {
@@ -2949,7 +2905,6 @@ function initializeRealtimeTrafficChart() {
                     ticks: {
                         color: labelColor,
                         callback: function(value) {
-                            // Chart data is stored in Bytes/second, formatBitRate expects Bytes/second
                             return formatBitRate(value);
                         }
                     },
@@ -2975,7 +2930,6 @@ function initializeRealtimeTrafficChart() {
                                 label += ': ';
                             }
                             if (context.parsed.y !== null) {
-                                // Assuming data is stored as Bytes/sec in the chart
                                 label += formatBitRate(context.parsed.y);
                             }
                             return label;
@@ -2987,18 +2941,14 @@ function initializeRealtimeTrafficChart() {
     });
 }
 
-// --- Event Listener Setup in DOMContentLoaded ---
-// (This will be added/modified in the DOMContentLoaded listener)
-
 async function fetchAndDisplayRouterHealth() {
     const modelEl = document.getElementById('routerModel');
     const versionEl = document.getElementById('routerVersion');
     const uptimeEl = document.getElementById('routerUptime');
-    const cpuLoadTextEl = document.getElementById('routerCpuLoadText'); // Text next to CPU chart
-    const memoryUsageTextEl = document.getElementById('routerMemoryUsageText'); // Text next to Memory chart
+    const cpuLoadTextEl = document.getElementById('routerCpuLoadText');
+    const memoryUsageTextEl = document.getElementById('routerMemoryUsageText');
     const errorEl = document.getElementById('routerStatusError');
 
-    // Helper to reset fields
     const resetUI = (isError = false) => {
         const errorMsg = isError ? getTranslation('Error') : 'N/A';
         if (modelEl) modelEl.textContent = errorMsg;
@@ -3007,7 +2957,6 @@ async function fetchAndDisplayRouterHealth() {
         if (cpuLoadTextEl) cpuLoadTextEl.textContent = errorMsg;
         if (memoryUsageTextEl) memoryUsageTextEl.textContent = errorMsg;
 
-        // Reset/clear charts if they exist
         if (routerCpuLoadChartInstance) {
             routerCpuLoadChartInstance.data.datasets[0].data = [0, 100];
             routerCpuLoadChartInstance.update();
@@ -3029,7 +2978,6 @@ async function fetchAndDisplayRouterHealth() {
             if (versionEl) versionEl.textContent = health.version || 'N/A';
             if (uptimeEl) uptimeEl.textContent = health.uptime || 'N/A';
 
-            // CPU Load
             const cpuLoad = parseInt(health['cpu-load']);
             if (!isNaN(cpuLoad)) {
                 if (!routerCpuLoadChartInstance) {
@@ -3041,13 +2989,12 @@ async function fetchAndDisplayRouterHealth() {
                 if (cpuLoadTextEl) cpuLoadTextEl.textContent = `${cpuLoad}%`;
             } else {
                 if (cpuLoadTextEl) cpuLoadTextEl.textContent = 'N/A';
-                if (routerCpuLoadChartInstance) { // Reset chart if data invalid
+                if (routerCpuLoadChartInstance) {
                     routerCpuLoadChartInstance.data.datasets[0].data = [0, 100];
                     routerCpuLoadChartInstance.update();
                 }
             }
 
-            // Memory Usage
             const totalMem = parseInt(health['total-memory']);
             const freeMem = parseInt(health['free-memory']);
             if (!isNaN(totalMem) && !isNaN(freeMem) && totalMem > 0) {
@@ -3062,7 +3009,7 @@ async function fetchAndDisplayRouterHealth() {
                 if (memoryUsageTextEl) memoryUsageTextEl.textContent = `${formatBytes(usedMem)} / ${formatBytes(totalMem)} (${memPercentage}%)`;
             } else {
                 if (memoryUsageTextEl) memoryUsageTextEl.textContent = 'N/A';
-                 if (routerMemoryUsageChartInstance) { // Reset chart if data invalid
+                 if (routerMemoryUsageChartInstance) {
                     routerMemoryUsageChartInstance.data.datasets[0].data = [0, 100];
                     routerMemoryUsageChartInstance.update();
                 }
@@ -3093,7 +3040,6 @@ async function fetchAndDisplayRouterHealth() {
     }
 }
 
-
 // --- Historical Analytics Functions ---
 async function loadHistoricalAnalytics() {
     const startDate = document.getElementById('historicalStartDate').value;
@@ -3106,11 +3052,9 @@ async function loadHistoricalAnalytics() {
     }
     logger.info(`Loading historical data from ${startDate} to ${endDate}, interval: ${interval}`);
 
-    // Fetch and render historical usage
     const usageData = await apiCall(`/analytics/historical_usage?start_date=${startDate}&end_date=${endDate}&interval=${interval}`);
     renderHistoricalUsageChart(usageData ? usageData.data : []);
 
-    // Fetch and render historical peak users
     const peakUsersData = await apiCall(`/analytics/historical_peak_users?start_date=${startDate}&end_date=${endDate}&interval=${interval}`);
     renderHistoricalPeakUsersChart(peakUsersData ? peakUsersData.data : []);
 }
@@ -3223,7 +3167,7 @@ function renderHistoricalPeakUsersChart(data) {
                 y: {
                     beginAtZero: true,
                     grid: { color: gridColor },
-                    ticks: { color: labelColor, stepSize: 1 } // Ensure y-axis shows whole numbers for users
+                    ticks: { color: labelColor, stepSize: 1 }
                 },
                 x: { 
                     grid: { display: false },
@@ -3240,6 +3184,103 @@ function renderHistoricalPeakUsersChart(data) {
         }
     });
 }
+
+function formatUptimeFromSeconds(totalSeconds) {
+    if (isNaN(totalSeconds) || totalSeconds === null || totalSeconds < 0) {
+        return 'N/A';
+    }
+    if (totalSeconds === 0) return '0s';
+
+    const days = Math.floor(totalSeconds / (3600 * 24));
+    totalSeconds %= (3600 * 24);
+    const hours = Math.floor(totalSeconds / 3600);
+    totalSeconds %= 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    let parts = [];
+    if (days > 0) parts.push(days + 'd');
+    if (hours > 0) parts.push(hours + 'h');
+    if (minutes > 0) parts.push(minutes + 'm');
+    if (seconds > 0 || parts.length === 0) parts.push(seconds + 's');
+
+    return parts.join('');
+}
+
+async function fetchAndDisplayUserActivity() {
+    const userSelect = document.getElementById('historicalUserSelect');
+    const username = userSelect.value;
+    const startDate = document.getElementById('historicalStartDate').value;
+    const endDate = document.getElementById('historicalEndDate').value;
+
+    const displayArea = document.getElementById('userActivityDisplayArea');
+    const tableContainer = document.getElementById('userActivityTableContainer');
+    const tableBody = document.querySelector('#userActivityTable tbody');
+    const messageEl = document.getElementById('userActivityMessage');
+
+    if (!username) {
+        showAlert('globalAlert', 'warning', getTranslation('Please select a user.'));
+        return;
+    }
+    if (!startDate || !endDate) {
+        showAlert('globalAlert', 'warning', getTranslation('Please select both start and end dates.'));
+        return;
+    }
+    if (new Date(startDate) > new Date(endDate)) {
+        showAlert('globalAlert', 'warning', getTranslation('Start date cannot be after end date.'));
+        return;
+    }
+
+    if (tableBody) tableBody.innerHTML = '';
+    if (tableContainer) tableContainer.style.display = 'none';
+    if (messageEl) {
+        messageEl.textContent = getTranslation('Loading user activity...');
+        messageEl.className = '';
+        messageEl.style.display = 'block';
+    }
+
+    try {
+        const result = await apiCall(`/analytics/user_activity_history/${encodeURIComponent(username)}?start_date=${startDate}&end_date=${endDate}`);
+
+        if (result && result.success && result.data) {
+            if (result.data.length > 0) {
+                result.data.forEach(log => {
+                    const row = tableBody.insertRow();
+                    row.insertCell().textContent = log.timestamp;
+                    row.insertCell().textContent = log.profile || 'N/A';
+                    row.insertCell().textContent = formatBytes(log.bytes_in);
+                    row.insertCell().textContent = formatBytes(log.bytes_out);
+                    row.insertCell().textContent = formatUptimeFromSeconds(log.uptime_seconds);
+                });
+                if (tableContainer) tableContainer.style.display = 'block';
+                if (messageEl) messageEl.style.display = 'none';
+            } else {
+                if (messageEl) {
+                    messageEl.textContent = getTranslation('No activity found for this user in the selected period.');
+                    messageEl.style.display = 'block';
+                }
+                if (tableContainer) tableContainer.style.display = 'none';
+            }
+        } else {
+            const errorMsg = result ? getTranslation(result.message) : getTranslation('Failed to load user activity.');
+             if (messageEl) {
+                messageEl.textContent = errorMsg;
+                messageEl.className = 'text-danger'; // Ensure error styling
+                messageEl.style.display = 'block';
+            }
+            if (tableContainer) tableContainer.style.display = 'none';
+        }
+    } catch (error) {
+        logger.error("Error in fetchAndDisplayUserActivity:", error);
+        if (messageEl) {
+            messageEl.textContent = getTranslation('Network or server error while fetching user activity.');
+            messageEl.className = 'text-danger'; // Ensure error styling
+            messageEl.style.display = 'block';
+        }
+        if (tableContainer) tableContainer.style.display = 'none';
+    }
+}
+
 
 // Helper to convert hex color to rgba for chart backgrounds
 function hexToRgba(hex, alpha = 1) {
