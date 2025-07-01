@@ -1064,10 +1064,23 @@
 
         <div id="settings" class="tab-content" role="tabpanel" aria-labelledby="tab-settings">
             <div class="panel">
-                <h3 class="panel-header">Router Connection</h3>
+                <h3 class="panel-header">Select Router</h3>
+                <div class="form-group" style="margin-bottom: 2rem;">
+                    <label for="routerSelector">Currently Managing Router:</label>
+                    <select id="routerSelector" class="form-control">
+                        <option value="">Loading routers...</option>
+                    </select>
+                </div>
+                <button id="addNewRouterButton" class="btn btn-success" style="margin-bottom: 1.5rem;"><i class="fas fa-plus"></i> Add New Router</button>
+            </div>
+
+            <div class="panel" id="routerConfigPanel">
+                <h3 class="panel-header" id="routerConfigPanelTitle">Router Configuration</h3>
                  <form id="configForm">
+                    <input type="hidden" id="routerIdField"> <!-- Hidden field to store current router ID for save -->
                     <div class="form-grid">
-                        <div class="form-group"><label>Router IP Address</label><input type="text" id="routerHost"></div>
+                        <div class="form-group"><label for="routerDisplayName">Display Name</label><input type="text" id="routerDisplayName" required></div>
+                        <div class="form-group"><label for="routerHost">Router IP Address</label><input type="text" id="routerHost" required></div>
                         <div class="form-group"><label>API Port</label><input type="number" id="routerPort"></div>
                         <div class="form-group"><label>Username</label><input type="text" id="routerUsername"></div>
                         <div class="form-group"><label>Password</label><input type="password" id="routerPassword" placeholder="Enter new password to update"></div>
@@ -1162,6 +1175,8 @@ let lastGeneratedBatchCredentials = []; // To store the last batch of generated 
 let analyticsDataLoaded = false; // Flag for initial analytics load
 let cachedTranslations = {}; // For storing fetched translations
 let featureFlags = { pdf_export: false, qr_codes: false }; // Store feature availability
+let currentRouterId = null; // Stores the ID of the currently selected router
+let allConfiguredRouters = []; // Stores the list of all routers from /api/routers
 
 // Chart instances
 let profileUsageChartInstance;
@@ -1213,91 +1228,46 @@ document.addEventListener('DOMContentLoaded', () => {
             if (themeToggleLabel) themeToggleLabel.textContent = 'Light Mode';
         }
         localStorage.setItem('theme', theme);
-        // Dispatch a custom event that charts can listen to for theme changes
         document.dispatchEvent(new CustomEvent('themeChanged', { detail: { theme: theme } }));
     }
 
     if (themeToggle) {
         themeToggle.addEventListener('change', () => {
-            if (themeToggle.checked) {
-                applyTheme('dark');
-            } else {
-                applyTheme('light');
-            }
+            applyTheme(themeToggle.checked ? 'dark' : 'light');
         });
     }
 
-    // Load saved theme or OS preference
     const savedTheme = localStorage.getItem('theme');
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-
-    if (savedTheme) {
-        applyTheme(savedTheme);
-    } else if (prefersDark) {
-        applyTheme('dark');
-    } else {
-        applyTheme('light'); // Default to light
-    }
-    // End Theme Toggle Logic
+    applyTheme(savedTheme || (prefersDark ? 'dark' : 'light'));
 
     document.querySelectorAll('.nav-link').forEach(link => {
         link.addEventListener('click', e => {
             e.preventDefault();
             const tabName = link.dataset.tab;
-
-            if (tabName === 'analytics' && !analyticsDataLoaded) {
-                loadAnalyticsData();
-                analyticsDataLoaded = true;
-            }
-            if (tabName === 'dashboard') { // When dashboard tab is clicked
-                fetchAndDisplayRouterHealth(); // Refresh router health
-                // loadDashboardStats(); // Already likely called by init or interval
-            }
-            if (tabName === 'historical-analytics') { // When historical analytics tab is clicked
-                 // If users haven't been loaded yet for the dropdown, load them.
-                 // This assumes currentUsers might not be populated if user navigates directly here.
-                if (currentUsers.length === 0) {
-                    loadUsers(); // This will populate the dropdown
-                }
-            }
-            
-            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-            link.classList.add('active');
-
-            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-            document.getElementById(tabName).classList.add('active');
-            
-            document.getElementById('pageTitle').textContent = link.querySelector('span').textContent;
+            navigateToTab(tabName);
         });
     });
     
-    // Initial load
     init();
     
-    // Setup static translated UI elements not covered by other functions
     setupStaticTranslations();
 
-    // Initial call for router health on page load (assuming dashboard is active)
-    fetchAndDisplayRouterHealth();
-
-    // Setup filter listeners
+    // Event listeners for router config form and user search/filters
     document.getElementById('userSearchInput').addEventListener('input', () => filterAndDisplayUsers());
     document.getElementById('userFilterProfile').addEventListener('change', () => filterAndDisplayUsers());
     document.getElementById('userFilterStatus').addEventListener('change', () => filterAndDisplayUsers());
 
-    // Setup Maintenance button listeners
     const deleteByProfileBtn = document.getElementById('deleteByProfileButton');
-    if (deleteByProfileBtn) {
-        deleteByProfileBtn.addEventListener('click', handleDeleteUsersByProfile);
-    }
+    if (deleteByProfileBtn) deleteByProfileBtn.addEventListener('click', handleDeleteUsersByProfile);
 
     const deleteByStatusBtn = document.getElementById('deleteByStatusButton');
-    if (deleteByStatusBtn) {
-        deleteByStatusBtn.addEventListener('click', handleDeleteUsersByStatus);
-    }
+    if (deleteByStatusBtn) deleteByStatusBtn.addEventListener('click', handleDeleteUsersByStatus);
     
-    // Setup form submissions
     document.getElementById('configForm').addEventListener('submit', handleConfigSave);
+    document.getElementById('routerSelector').addEventListener('change', handleRouterSelectionChange);
+    document.getElementById('addNewRouterButton').addEventListener('click', setupNewRouterForm);
+
     document.getElementById('createUserForm').addEventListener('submit', handleCreateUser);
     document.getElementById('bulkCreateUserForm').addEventListener('submit', handleBulkCreateUsers);
     document.getElementById('editUserForm').addEventListener('submit', handleEditUser);
@@ -1446,41 +1416,89 @@ document.addEventListener('DOMContentLoaded', () => {
 async function init() {
     // Fetch translations first
     try {
-        cachedTranslations = await apiCall('/translations', {}, true); // Pass true to suppress global spinner for this call if desired
+        cachedTranslations = await apiCall('/translations', {}, true);
         logger.info("Translations loaded.");
     } catch (error) {
         logger.error("Failed to load translations:", error);
-        //cachedTranslations will remain empty, getTranslation will fallback to keys
     }
-    // Now update UI elements that depend on translations being loaded
     updateStaticTranslatedText();
 
+    await loadAndSelectRouters(); // This will load routers and trigger initial data load for the selected router.
+                                  // It replaces direct calls to checkConnection, loadDashboardStats, etc.
 
-    await checkConnection();
-    await loadDashboardStats();
-    await loadUsers(); // This will now populate historicalUserSelect
-    await loadProfiles();
-    await loadActiveSessions();
-    await loadConfig();
     setupDeleteByStatusDropdown();
     
-    // Auto-refresh data every 60 seconds
     setInterval(() => {
-        if (document.getElementById('dashboard').classList.contains('active')) {
-             loadDashboardStats();
-        }
-        if (document.getElementById('users').classList.contains('active')) {
-             loadUsers(true); // silent refresh
-        }
-        if (document.getElementById('sessions').classList.contains('active')) {
-             loadActiveSessions();
+        if (currentRouterId) { // Only auto-refresh if a router is selected
+            const activeTab = document.querySelector('.tab-content.active');
+            if (activeTab) {
+                const tabId = activeTab.id;
+                if (tabId === 'dashboard') loadDashboardStats();
+                else if (tabId === 'users') loadUsers(true); // silent refresh
+                else if (tabId === 'sessions') loadActiveSessions();
+            }
         }
     }, 60000);
 }
 
+function navigateToTab(tabName) {
+    // Logic to handle tab-specific data loading or checks
+    if (!currentRouterId && !['settings', 'logout'].includes(tabName)) { // Allow settings and logout even if no router selected
+        showAlert('globalAlert', 'warning', 'Please select a router from the Settings tab first.');
+        // Optionally, redirect to settings tab
+        // navigateToTab('settings');
+        return;
+    }
+
+    if (tabName === 'analytics' && !analyticsDataLoaded && currentRouterId) {
+        loadAnalyticsData(); // Will use currentRouterId
+        analyticsDataLoaded = true;
+    }
+    if (tabName === 'dashboard' && currentRouterId) {
+        fetchAndDisplayRouterHealth();
+        loadDashboardStats();
+    }
+    if (tabName === 'historical-analytics' && currentRouterId) {
+        if (currentUsers.length === 0) { // users for dropdown
+            loadUsers();
+        }
+    }
+
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    const activeLink = document.querySelector(`.nav-link[data-tab="${tabName}"]`);
+    if (activeLink) activeLink.classList.add('active');
+
+    document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+    const activeTabContent = document.getElementById(tabName);
+    if (activeTabContent) activeTabContent.classList.add('active');
+
+    const pageTitleEl = document.getElementById('pageTitle');
+    if (pageTitleEl && activeLink) {
+        pageTitleEl.textContent = activeLink.querySelector('span').textContent;
+    }
+}
+
+
 // --- API & Data Loading ---
-async function apiCall(endpoint, options = {}) {
+async function apiCall(endpoint, options = {}, isGlobalApi = false) {
     showGlobalSpinner(true);
+
+    let fullEndpoint = endpoint;
+    // Prepend router ID for non-global, Mikrotik-specific calls, if a router is selected
+    if (!isGlobalApi && currentRouterId && !endpoint.startsWith('/routers/')) {
+         // Endpoints like /users, /profiles, /active-sessions, etc.
+        fullEndpoint = `/routers/${currentRouterId}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+    } else if (!isGlobalApi && !endpoint.startsWith('/routers/') && !currentRouterId) {
+        // If it's a router-specific call but no router is selected, block it.
+        // Exception for /test-connection which is called with a specific router ID during config.
+        if (!endpoint.includes('/test-connection')) { // Allow test-connection to proceed if it has its own router_id
+            logger.warn(`apiCall blocked for ${endpoint}: No router selected.`);
+            showAlert('globalAlert', 'warning', 'No router selected. Please select a router in Settings.');
+            showGlobalSpinner(false);
+            return null; // Or throw an error
+        }
+    }
+
 
     // Prepare headers
     const headers = {
@@ -1506,19 +1524,19 @@ async function apiCall(endpoint, options = {}) {
     };
 
     try {
-        const response = await fetch(`${API_BASE_URL}/api${endpoint}`, fetchOptions);
+        const response = await fetch(`${API_BASE_URL}/api${fullEndpoint}`, fetchOptions); // Use fullEndpoint
         const contentType = response.headers.get("content-type");
         
         if (!response.ok) {
             let errorPayload;
             if (contentType && contentType.indexOf("application/json") !== -1) {
                 try { errorPayload = await response.json(); } catch (e) {
-                    logger.error(`apiCall: Failed to parse JSON error response from ${endpoint}. Error: ${e}`);
+                    logger.error(`apiCall: Failed to parse JSON error response from ${fullEndpoint}. Error: ${e}`);
                     errorPayload = { message: (await response.text()).substring(0,500) || `HTTP error! status: ${response.status}` };
                 }
             } else {
                 const textResponse = await response.text();
-                logger.warn(`apiCall to ${endpoint} received non-JSON error response (type: ${contentType}). Body: ${textResponse.substring(0, 500)}...`);
+                logger.warn(`apiCall to ${fullEndpoint} received non-JSON error response (type: ${contentType}). Body: ${textResponse.substring(0, 500)}...`);
                 errorPayload = { message: textResponse.substring(0,500) || `HTTP error! status: ${response.status}, non-JSON response.` };
             }
             throw new Error(errorPayload.message || `HTTP error! status: ${response.status}`);
@@ -1526,13 +1544,13 @@ async function apiCall(endpoint, options = {}) {
 
         if (contentType && contentType.indexOf("application/json") === -1) {
             const textResponse = await response.text();
-            logger.error(`apiCall to ${endpoint} expected JSON but received ${contentType}. Response body: ${textResponse.substring(0, 500)}...`);
-            throw new Error(`Expected JSON response from server for ${endpoint}, but received ${contentType}.`);
+            logger.error(`apiCall to ${fullEndpoint} expected JSON but received ${contentType}. Response body: ${textResponse.substring(0, 500)}...`);
+            throw new Error(`Expected JSON response from server for ${fullEndpoint}, but received ${contentType}.`);
         }
         
         return await response.json();
     } catch (error) {
-        logger.error(`API Call Error to ${endpoint}:`, error);
+        logger.error(`API Call Error to ${fullEndpoint}:`, error);
         if (error.message.toLowerCase().includes('failed to fetch') || error.message.toLowerCase().includes('networkerror')) {
             showPersistentConnectionMessage(getTranslation('Network error or server is unreachable. Please check your connection and the server status. You may need to <a href="#" onclick="navigateToTab(\'settings\'); return false;">reconfigure settings</a> or refresh the page.'));
             const statusEl = document.getElementById('connectionStatus');
@@ -1570,7 +1588,8 @@ async function handleChangePassword(e) {
     }
 
     const payload = { current_password: currentPassword, new_password: newPassword, confirm_password: confirmNewPassword };
-    const result = await apiCall('/admin/change-password', { method: 'POST', body: JSON.stringify(payload) });
+    // Admin password change is a global operation, not router-specific
+    const result = await apiCall('/admin/change-password', { method: 'POST', body: JSON.stringify(payload) }, true);
 
     if (result && result.success) {
         showAlert('globalAlert', 'success', getTranslation(result.message || 'Admin password changed successfully. You may need to log in again with your new password if your session is invalidated.'));
@@ -1580,9 +1599,17 @@ async function handleChangePassword(e) {
     }
 }
 
-async function checkConnection(isInitialLoad = false) {
+async function checkConnection(routerIdToCheck, isInitialLoad = false) {
     const statusEl = document.getElementById('connectionStatus');
-    const result = await apiCall('/test-connection', { method: 'POST' });
+    if (!routerIdToCheck) {
+        statusEl.className = 'disconnected';
+        statusEl.innerHTML = `<i class="fas fa-ban"></i><span> No Router Selected</span>`;
+        updateUIAfterConnectionCheck(false, isInitialLoad);
+        return false; // Return connection status
+    }
+
+    // Test connection for a specific router ID
+    const result = await apiCall(`/routers/${routerIdToCheck}/test-connection`, { method: 'POST' }, true);
 
     let isConnected = false;
     if (result && result.success) {
@@ -1595,13 +1622,179 @@ async function checkConnection(isInitialLoad = false) {
         statusEl.className = 'disconnected';
         const failureMessage = result ? result.message : getTranslation('Connection test failed. Router might be unreachable.');
         statusEl.innerHTML = `<i class="fas fa-exclamation-triangle"></i><span> ${failureMessage}</span>`;
+        const routerName = allConfiguredRouters.find(r => r.id === routerIdToCheck)?.displayName || routerIdToCheck;
         if (document.getElementById('settings') && !document.getElementById('settings').classList.contains('active')) {
-            showPersistentConnectionMessage(`Mikrotik router not connected. Please <a href="#" onclick="navigateToTab('settings'); return false;">configure settings</a>.`);
+             showPersistentConnectionMessage(`Router '${routerName}' not connected. Please <a href="#" onclick="navigateToTab('settings'); return false;">check configuration</a>.`);
         }
         isConnected = false;
     }
-    updateUIAfterConnectionCheck(isConnected, isInitialLoad);
+    updateUIAfterConnectionCheck(isConnected, isInitialLoad, routerIdToCheck); // Pass routerIdToCheck
+    return isConnected;
 }
+
+async function loadAndSelectRouters() {
+    const routerSelector = document.getElementById('routerSelector');
+    routerSelector.innerHTML = `<option value="">${getTranslation('Loading routers...')}</option>`;
+    const data = await apiCall('/routers', {}, true); // Global API call
+
+    if (data && data.routers) {
+        allConfiguredRouters = data.routers;
+        routerSelector.innerHTML = ''; // Clear loading message
+        if (allConfiguredRouters.length === 0) {
+            routerSelector.innerHTML = `<option value="">${getTranslation('No routers configured. Add one below.')}</option>`;
+            currentRouterId = null;
+            populateRouterConfigForm(null); // Show empty form for adding first router
+            updateUIAfterConnectionCheck(false, true, null); // No router, so not connected
+            return;
+        }
+
+        allConfiguredRouters.forEach(router => {
+            const option = new Option(`${router.displayName} (${router.host})`, router.id);
+            routerSelector.add(option);
+        });
+
+        // Try to load last selected router or default to first
+        const lastSelectedRouterId = localStorage.getItem('selectedRouterId');
+        if (lastSelectedRouterId && allConfiguredRouters.some(r => r.id === lastSelectedRouterId)) {
+            routerSelector.value = lastSelectedRouterId;
+            currentRouterId = lastSelectedRouterId;
+        } else if (allConfiguredRouters.length > 0) {
+            routerSelector.value = allConfiguredRouters[0].id;
+            currentRouterId = allConfiguredRouters[0].id;
+        }
+
+        if (currentRouterId) {
+            localStorage.setItem('selectedRouterId', currentRouterId);
+            populateRouterConfigForm(currentRouterId);
+            await handleRouterSelectionChange(); // Load data for the selected router
+        }
+    } else {
+        routerSelector.innerHTML = `<option value="">${getTranslation('Error loading routers.')}</option>`;
+        currentRouterId = null;
+        updateUIAfterConnectionCheck(false, true, null);
+    }
+}
+
+async function handleRouterSelectionChange() {
+    const routerSelector = document.getElementById('routerSelector');
+    const selectedId = routerSelector.value;
+
+    if (selectedId === currentRouterId && currentRouterId !== null) { // Avoid reload if same router is re-selected (e.g. by populate)
+        // But still ensure config form is populated if it was, for instance, an "Add New" scenario before
+        populateRouterConfigForm(selectedId);
+        return;
+    }
+
+    currentRouterId = selectedId;
+    localStorage.setItem('selectedRouterId', currentRouterId);
+
+    if (currentRouterId) {
+        populateRouterConfigForm(currentRouterId);
+        const isConnected = await checkConnection(currentRouterId, true); // true for initial load context for this router
+        if (isConnected) {
+            // Load all data relevant to this router
+            loadDashboardStats();
+            loadUsers();
+            loadProfiles();
+            loadActiveSessions();
+            // Analytics and health might be loaded when their tabs are clicked or if dashboard is active
+            if (document.getElementById('dashboard').classList.contains('active')) {
+                fetchAndDisplayRouterHealth();
+            }
+            if (document.getElementById('analytics').classList.contains('active')) {
+                loadAnalyticsData(); // Reset analytics data loaded flag
+                analyticsDataLoaded = true;
+            } else {
+                analyticsDataLoaded = false; // Reset if navigating away from analytics tab
+            }
+        }
+    } else {
+        // No router selected (e.g., if list is empty after deletion)
+        populateRouterConfigForm(null); // Clear/reset form
+        updateUIAfterConnectionCheck(false, true, null); // UI reflects no router selected
+        // Clear all data tables/displays
+        clearAllRouterSpecificData();
+    }
+}
+
+function populateRouterConfigForm(routerId) {
+    const form = document.getElementById('configForm');
+    const title = document.getElementById('routerConfigPanelTitle');
+    const routerIdField = document.getElementById('routerIdField');
+    const routerConfigPanel = document.getElementById('routerConfigPanel');
+
+    if (routerId && allConfiguredRouters) {
+        const router = allConfiguredRouters.find(r => r.id === routerId);
+        if (router) {
+            title.textContent = `Edit Configuration: ${router.displayName}`;
+            routerIdField.value = router.id;
+            document.getElementById('routerDisplayName').value = router.displayName;
+            document.getElementById('routerHost').value = router.host;
+            document.getElementById('routerPort').value = router.port;
+            document.getElementById('routerUsername').value = router.username;
+            document.getElementById('routerPassword').value = ''; // Never populate password
+            document.getElementById('routerPassword').placeholder = 'Enter new password to update, or leave blank';
+            document.getElementById('hotspotLoginUrl').value = router.hotspot_login_url || '';
+            routerConfigPanel.style.display = 'block';
+            // Enable form fields for editing
+            form.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+            return;
+        }
+    }
+    // If no routerId, or router not found, or "Add New" mode
+    title.textContent = 'Add New Router Configuration';
+    form.reset(); // Clear form
+    routerIdField.value = ''; // No ID for new router yet
+    document.getElementById('routerPassword').placeholder = 'Enter password';
+    routerConfigPanel.style.display = 'block'; // Ensure it's visible for adding new
+    form.querySelectorAll('input, select, button').forEach(el => el.disabled = false);
+}
+
+function setupNewRouterForm() {
+    currentRouterId = null; // Clear active selection
+    document.getElementById('routerSelector').value = ""; // Deselect in dropdown
+    localStorage.removeItem('selectedRouterId');
+    populateRouterConfigForm(null); // Setup form for new entry
+    document.getElementById('routerConfigPanelTitle').textContent = 'Add New Router Configuration';
+    document.getElementById('routerDisplayName').focus();
+    // Disable router-specific UI elements as no router is "active" for data display
+    updateUIAfterConnectionCheck(false, false, null); // Not connected, not initial, no specific router
+    clearAllRouterSpecificData();
+}
+
+function clearAllRouterSpecificData() {
+    document.getElementById('totalUsers').textContent = '-';
+    document.getElementById('activeSessions').textContent = '-';
+    document.querySelector('#usersTable tbody').innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('No router selected.')}</td></tr>`;
+    document.querySelector('#sessionsTable tbody').innerHTML = `<tr><td colspan="7" style="text-align:center;">${getTranslation('No router selected.')}</td></tr>`;
+    document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('No router selected.')}</td></tr>`;
+
+    const analyticsTotalDataEl = document.getElementById('analyticsTotalData');
+    if (analyticsTotalDataEl) analyticsTotalDataEl.textContent = getTranslation('Total Data Transferred: No Router Selected');
+    if (profileUsageChartInstance) profileUsageChartInstance.destroy();
+    if (topUsersChartInstance) topUsersChartInstance.destroy();
+    // Clear other charts like historical if needed, or just their data.
+    // For now, historical is global, so no change.
+
+    // Reset real-time traffic
+    stopTrafficMonitoring();
+    document.getElementById('realtimeInterfaceName').value = '';
+
+    // Reset router health
+    document.getElementById('routerModel').textContent = 'N/A';
+    document.getElementById('routerVersion').textContent = 'N/A';
+    document.getElementById('routerUptime').textContent = 'N/A';
+    document.getElementById('routerCpuLoadText').textContent = 'N/A';
+    document.getElementById('routerMemoryUsageText').textContent = 'N/A';
+    if (routerCpuLoadChartInstance) initRouterCpuLoadChart('routerCpuLoadChart', 0);
+    if (routerMemoryUsageChartInstance) initRouterMemoryUsageChart('routerMemoryUsageChart', 0);
+
+    // Clear connection status
+    const statusEl = document.getElementById('connectionStatus');
+    statusEl.className = 'disconnected';
+    statusEl.innerHTML = `<i class="fas fa-ban"></i><span> No Router Selected</span>`;
+}
+
 
 function showPersistentConnectionMessage(message) {
     let msgDiv = document.getElementById('persistentConnectionMessage');
@@ -1622,60 +1815,80 @@ function showPersistentConnectionMessage(message) {
     msgDiv.style.display = 'block';
 }
 
-function updateUIAfterConnectionCheck(isConnected, isInitialLoad = false) {
-    const mikrotikDependentElements = [
+function updateUIAfterConnectionCheck(isConnected, isInitialLoad = false, forRouterId = null) {
+    const routerIsSelectedAndConnected = isConnected && forRouterId !== null;
+
+    // Elements that depend on a router being connected
+    const routerDependentControls = [
         '#userSearchInput', '#userFilterProfile', '#userFilterStatus',
+        '#createUserForm input', '#createUserForm select', '#createUserForm button[type="submit"]',
+        '#bulkCreateUserForm input', '#bulkCreateUserForm select', '#bulkCreateUserForm button[type="submit"]',
+        '#exportVouchersHTMLButton', '#exportVouchersPDFButton',
+        '#refreshAnalyticsButton',
+        '#startRealtimeTrafficButton', '#realtimeInterfaceName',
+        '#refreshRouterStatusButton',
+        '#loadUserActivityButton', '#historicalUserSelect',
         ...document.querySelectorAll('#usersTable button'),
         ...document.querySelectorAll('#users .panel-header button'),
         ...document.querySelectorAll('#users .btn-success, #users .btn-primary, #users .btn-danger'),
-        '#createUserForm input', '#createUserForm select', '#createUserForm button',
-        '#bulkCreateUserForm input', '#bulkCreateUserForm select', '#bulkCreateUserForm button',
-        '#exportVouchersHTMLButton', '#exportVouchersPDFButton',
         ...document.querySelectorAll('#sessionsTable button'),
         ...document.querySelectorAll('#sessions .panel-header button'),
-        '#refreshAnalyticsButton',
         ...document.querySelectorAll('#profilesTable button'),
         ...document.querySelectorAll('#maintenance .panel:nth-child(1) .btn-success'),
         ...document.querySelectorAll('#maintenance .panel:nth-child(2) .btn-danger'),
         ...document.querySelectorAll('#maintenance .panel:nth-child(3) .btn-danger'),
-        ...document.querySelectorAll('#maintenance .panel:nth-child(4) .btn-danger'),
-        '#startRealtimeTrafficButton', '#realtimeInterfaceName', // Realtime traffic controls
-        '#refreshRouterStatusButton', // Router health refresh
-        '#loadUserActivityButton', '#historicalUserSelect' // User activity controls
+        ...document.querySelectorAll('#maintenance .panel:nth-child(4) .btn-danger')
     ];
 
-    mikrotikDependentElements.forEach(selector => {
+    routerDependentControls.forEach(selector => {
         if (typeof selector === 'string') {
-            const element = document.querySelector(selector);
-            if (element) element.disabled = !isConnected;
+            document.querySelectorAll(selector).forEach(el => el.disabled = !routerIsSelectedAndConnected);
         } else {
-            selector.disabled = !isConnected;
+            selector.disabled = !routerIsSelectedAndConnected;
         }
     });
 
-    document.querySelector('#configForm button[onclick="testConnection()"]').disabled = false;
-    document.querySelector('#configForm button[type="submit"]').disabled = false;
+    // Router configuration form fields are handled by populateRouterConfigForm and setupNewRouterForm.
+    // The "Test" and "Save" buttons for router config should be enabled if the form is for an existing router or new.
+    const configForm = document.getElementById('configForm');
+    const configFormButtons = configForm.querySelectorAll('button');
+    const routerIdFieldValue = document.getElementById('routerIdField').value;
+    const isConfigFormActive = routerIdFieldValue !== "" || document.getElementById('routerConfigPanelTitle').textContent.includes("Add New");
 
-    if (!isConnected && isInitialLoad) {
+    configFormButtons.forEach(btn => btn.disabled = !isConfigFormActive);
+
+
+    // "Add New Router" button should always be enabled.
+    document.getElementById('addNewRouterButton').disabled = false;
+
+    if (!routerIsSelectedAndConnected && isInitialLoad) {
         document.getElementById('totalUsers').textContent = '-';
         document.getElementById('activeSessions').textContent = '-';
-        document.querySelector('#usersTable tbody').innerHTML = `<tr><td colspan="9" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
-        document.querySelector('#sessionsTable tbody').innerHTML = `<tr><td colspan="7" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
-        document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
+        document.querySelector('#usersTable tbody').innerHTML = `<tr><td colspan="9" style="text-align:center;">${forRouterId === null ? getTranslation('No router selected.') : getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
+        document.querySelector('#sessionsTable tbody').innerHTML = `<tr><td colspan="7" style="text-align:center;">${forRouterId === null ? getTranslation('No router selected.') : getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
+        document.querySelector('#profilesTable tbody').innerHTML = `<tr><td colspan="5" style="text-align:center;">${forRouterId === null ? getTranslation('No router selected.') : getTranslation('Not connected to Mikrotik router.')}</td></tr>`;
         const analyticsTotalDataEl = document.getElementById('analyticsTotalData');
-        if (analyticsTotalDataEl) analyticsTotalDataEl.textContent = getTranslation('Total Data Transferred: Not Connected');
+        if (analyticsTotalDataEl) analyticsTotalDataEl.textContent = getTranslation('Total Data Transferred: No Router Selected or Not Connected');
+
+        // Clear charts
         if (profileUsageChartInstance) profileUsageChartInstance.destroy();
         if (topUsersChartInstance) topUsersChartInstance.destroy();
-        const profileCtx = document.getElementById('profileUsageChart').getContext('2d');
-        const topUsersCtx = document.getElementById('topUsersChart').getContext('2d');
-        profileCtx.clearRect(0,0,profileCtx.canvas.width, profileCtx.canvas.height);
-        topUsersCtx.clearRect(0,0,topUsersCtx.canvas.width, topUsersCtx.canvas.height);
+        // Could also clear historical charts if they are router-specific in future
+        if (realtimeTrafficChartInstance) stopTrafficMonitoring(); // Clears chart too
+        if (routerCpuLoadChartInstance) initRouterCpuLoadChart('routerCpuLoadChart', 0);
+        if (routerMemoryUsageChartInstance) initRouterMemoryUsageChart('routerMemoryUsageChart', 0);
+
+        const profileCtx = document.getElementById('profileUsageChart')?.getContext('2d');
+        const topUsersCtx = document.getElementById('topUsersChart')?.getContext('2d');
+        if(profileCtx) profileCtx.clearRect(0,0,profileCtx.canvas.width, profileCtx.canvas.height);
+        if(topUsersCtx) topUsersCtx.clearRect(0,0,topUsersCtx.canvas.width, topUsersCtx.canvas.height);
     }
 }
 
 
 async function loadDashboardStats() {
-    const data = await apiCall('/dashboard-stats');
+    if (!currentRouterId) return; // Don't load if no router selected
+    const data = await apiCall('/dashboard-stats'); // apiCall prepends router_id
     if (data) {
         document.getElementById('totalUsers').textContent = data.total_users !== undefined ? data.total_users : '-';
         document.getElementById('activeSessions').textContent = data.active_sessions !== undefined ? data.active_sessions : '-';
@@ -1896,13 +2109,11 @@ async function loadActiveSessions() {
 }
 
 async function loadConfig() {
-    const data = await apiCall('/config');
+async function loadConfig() { // For loading global app features, not specific router config for the form
+    const data = await apiCall('/config', {}, true); // Global API, not router specific
     if (data) {
-        document.getElementById('routerHost').value = data.mikrotik.host;
-        document.getElementById('routerPort').value = data.mikrotik.port;
-        document.getElementById('routerUsername').value = data.mikrotik.username;
-        document.getElementById('hotspotLoginUrl').value = data.mikrotik.hotspot_login_url;
-
+        // This function is now primarily for feature flags or other global settings.
+        // Router-specific config form population is handled by populateRouterConfigForm.
         if (data.features) {
             featureFlags = data.features;
             updateFeatureAvailabilityUI();
@@ -2047,23 +2258,55 @@ function displayProfiles() {
 // --- Event Handlers & Actions ---
 async function handleConfigSave(e) {
     e.preventDefault();
-    const payload = {
-        mikrotik: {
-            host: document.getElementById('routerHost').value,
-            port: parseInt(document.getElementById('routerPort').value),
-            username: document.getElementById('routerUsername').value,
-            hotspot_login_url: document.getElementById('hotspotLoginUrl').value
-        }
-    };
-    const password = document.getElementById('routerPassword').value;
-    if (password) payload.mikrotik.password = password;
+    const routerId = document.getElementById('routerIdField').value;
+    const displayName = document.getElementById('routerDisplayName').value;
+    const host = document.getElementById('routerHost').value;
+    const port = parseInt(document.getElementById('routerPort').value);
+    const username = document.getElementById('routerUsername').value;
+    const password = document.getElementById('routerPassword').value; // Will be empty if not changed for existing
+    const hotspotLoginUrl = document.getElementById('hotspotLoginUrl').value;
 
-    const result = await apiCall('/config', { method: 'POST', body: JSON.stringify(payload) });
-    if(result) {
-        showAlert('globalAlert', 'success', 'Configuration saved! Testing new connection...');
-        await checkConnection();
+    if (!displayName || !host || isNaN(port) || !username) {
+        showAlert('globalAlert', 'warning', 'Display Name, Host, Port, and Username are required.');
+        return;
+    }
+
+    const payload = {
+        displayName: displayName,
+        host: host,
+        port: port,
+        username: username,
+        hotspot_login_url: hotspotLoginUrl
+        // Password is only included if provided (for new, or to change existing)
+    };
+    if (password) {
+        payload.password = password;
+    }
+
+    let result;
+    if (routerId) { // Update existing router
+        result = await apiCall(`/routers/${routerId}`, { method: 'PUT', body: JSON.stringify(payload) }, true);
+    } else { // Add new router
+        result = await apiCall('/routers', { method: 'POST', body: JSON.stringify(payload) }, true);
+    }
+
+    if (result && result.success) {
+        showAlert('globalAlert', 'success', result.message || `Router configuration ${routerId ? 'updated' : 'added'} successfully!`);
+        // Reload the router list to reflect changes and re-select
+        await loadAndSelectRouters();
+        if (result.router_id && !routerId) { // If it was a new router, select it
+             document.getElementById('routerSelector').value = result.router_id;
+             await handleRouterSelectionChange(); // Trigger load for the new router
+        } else if (routerId) { // If updating, re-test connection for the current router
+            await checkConnection(routerId);
+        }
+    } else if (result && result.message) {
+        showAlert('globalAlert', 'danger', result.message);
+    } else {
+        showAlert('globalAlert', 'danger', `Failed to ${routerId ? 'update' : 'add'} router configuration.`);
     }
 }
+
 
 async function handleCreateUser(e) {
     e.preventDefault();
@@ -2271,8 +2514,12 @@ async function handleDeleteUsersByStatus() {
 }
 
 function triggerExport(format) {
+    if (!currentRouterId) {
+        showAlert('globalAlert', 'warning', 'Please select a router before exporting.');
+        return;
+    }
     const profileFilter = document.getElementById('exportProfileFilter').value;
-    let url = `${API_BASE_URL}/api/export-users?format=${format}`;
+    let url = `${API_BASE_URL}/api/routers/${currentRouterId}/export-users?format=${format}`;
     if (profileFilter) {
         url += `&profile_filter=${encodeURIComponent(profileFilter)}`;
     }
@@ -2281,9 +2528,38 @@ function triggerExport(format) {
 
 async function testConnection() {
     const button = event.target;
+    const routerIdToTest = document.getElementById('routerIdField').value; // Get ID from form
+
+    if (!routerIdToTest) { // This might happen if "Add New" form is not yet saved
+        const tempPayload = { // Construct payload from form for unsaved new router test
+            displayName: document.getElementById('routerDisplayName').value,
+            host: document.getElementById('routerHost').value,
+            port: parseInt(document.getElementById('routerPort').value),
+            username: document.getElementById('routerUsername').value,
+            password: document.getElementById('routerPassword').value,
+            hotspot_login_url: document.getElementById('hotspotLoginUrl').value
+        };
+         if (!tempPayload.host || isNaN(tempPayload.port) || !tempPayload.username) {
+            showAlert('globalAlert', 'warning', 'Host, Port, and Username are required to test connection for a new router.');
+            return;
+        }
+        // Note: This test for an unsaved router doesn't use a persisted router_id.
+        // The backend /test-connection endpoint needs to be able to handle this,
+        // or we only allow testing saved routers.
+        // For now, let's assume we primarily test saved routers.
+        // If we want to test unsaved, the backend /test-connection would need to accept full details.
+        // OR, we simplify: save first, then test.
+        // Current backend /routers/<id>/test-connection requires an ID.
+        // So, for a new router, this test button might be disabled or prompt to save first.
+        // Let's adjust: Test button should primarily work for existing, selected router.
+        // For "Add New", user should save first.
+        showAlert('globalAlert', 'info', 'Please save the new router configuration first to enable connection testing for it.');
+        return;
+    }
+
     button.innerHTML = '<span class="loading-spinner"></span> Testing...';
     button.disabled = true;
-    await checkConnection();
+    await checkConnection(routerIdToTest); // Test the specific router from the form
     button.innerHTML = '<i class="fas fa-plug"></i> Test';
     button.disabled = false;
 }

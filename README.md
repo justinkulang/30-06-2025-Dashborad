@@ -65,12 +65,14 @@ This project provides a web-based dashboard for managing Mikrotik Hotspot users,
             print(new_hash)
             ```
             Then, update the `password_hash` value in the `app_admin` section of `config.json` with this new hash.
-    *   **Mikrotik Connection:**
-        *   Configure your Mikrotik router details (host, API username, API password, port) either by:
-            1.  Manually editing `config.json` before the first run.
-            2.  Using the web application's "Settings" page after logging in with the default admin credentials. The application will not be able to manage the router until these details are correctly configured.
+    *   **Mikrotik Connection (Multi-Router Support):**
+        *   The application now supports managing multiple Mikrotik routers.
+        *   Router configurations are stored in `config.json` under a `mikrotik_routers` list (see "Multi-Router Configuration" section below).
+        *   You can add, edit, and select the active router to manage via the "Settings" tab in the web application.
+        *   On first setup, or if no routers are configured, you will be prompted to add one in the Settings tab.
     *   **Database Configuration:**
         *   The application uses an SQLite database (`hotspot_analytics.db` by default, created in the application's root directory) to store historical analytics data.
+        *   **Note:** Currently, historical data from all managed routers is aggregated into the same database tables. Router-specific historical filtering is not yet implemented.
         *   The database URI can be changed in `config.json` under the `database.uri` key if needed (e.g., to specify a different file path or use another SQLAlchemy-compatible database).
     *   **Scheduler Configuration:**
         *   A background scheduler logs data periodically for historical analytics.
@@ -119,7 +121,7 @@ Many critical configuration settings can be overridden using environment variabl
 
 **Available Environment Variables:**
 
-*   **Mikrotik Connection:**
+*   **Mikrotik Connection (Applies to the *first* router in `mikrotik_routers` list if defined, or initializes a new one):**
     *   `APP_MIKROTIK_HOST`: Mikrotik router IP address or hostname.
     *   `APP_MIKROTIK_PORT`: API port (integer).
     *   `APP_MIKROTIK_USERNAME`: API username.
@@ -144,6 +146,8 @@ Many critical configuration settings can be overridden using environment variabl
     *   `FLASK_SECRET_KEY`: (Covered below) Crucial for session security.
 *   **Logging Control (Docker):**
     *   `DISABLE_FILE_LOGGING`: Set to `true` to disable Flask's file logging (recommended for Docker where logs go to stdout/stderr).
+*   **Error Tracking (Sentry):**
+    *   `SENTRY_DSN`: Your Sentry Data Source Name (DSN) to enable error reporting to Sentry. If not set, Sentry integration is disabled.
 
 ### Database Migrations
 This application uses `Flask-Migrate` (which wraps Alembic) to manage database schema changes for the `hotspot_analytics.db`.
@@ -186,6 +190,76 @@ This application uses `Flask-Migrate` (which wraps Alembic) to manage database s
 *   The `FLASK_APP` environment variable must be set to point to your main application file (e.g., `app.py` or `wsgi.py`).
 *   When deploying, `flask db upgrade` should typically be run *before* starting the new version of the application server.
 *   The `hotspot_analytics.db` file (if using SQLite) should be writable by the user running the Flask commands and the application.
+
+### Monitoring, Health, and Rate Limiting
+
+*   **Health Check Endpoint:**
+    *   A simple health check endpoint is available at `/health`.
+    *   It returns a JSON response `{"status": "healthy", "timestamp": "<utc_timestamp>"}` with a 200 OK status.
+    *   This endpoint does not require authentication and is exempt from rate limiting, making it suitable for uptime monitoring services and load balancers.
+
+*   **API Rate Limiting:**
+    *   The application implements API rate limiting using Flask-Limiter to protect against abuse and brute-force attacks.
+    *   Default limits are applied to most routes: "200 per day; 50 per hour; 10 per minute" per IP address.
+    *   Stricter limits are applied to sensitive endpoints:
+        *   `/app-login`: "10 per minute"
+        *   `/api/admin/change-password`: "5 per hour"
+        *   `/api/initial-connect`: "10 per hour"
+    *   These limits are based on the client's remote IP address.
+
+*   **Error Tracking with Sentry:**
+    *   The application can integrate with Sentry for real-time error tracking and reporting.
+    *   To enable Sentry, set the `SENTRY_DSN` environment variable to your Sentry project's DSN.
+    *   If `SENTRY_DSN` is not provided, Sentry integration will be disabled.
+    *   Sample rates for traces and profiles can be configured in `config.json` (e.g., `server.sentry_traces_sample_rate`) or default to 0.2.
+
+### Multi-Router Configuration in `config.json`
+The application has been enhanced to support managing multiple Mikrotik routers.
+The `config.json` structure has changed:
+*   The single `mikrotik` object is now replaced by a list called `mikrotik_routers`.
+*   Each item in the `mikrotik_routers` list is an object representing a single router's configuration.
+*   If an old `config.json` with a single `mikrotik` object is found, the application will automatically migrate it to the new list structure on first startup, creating one entry with an ID like "migrated_router_1".
+
+**Example `mikrotik_routers` structure in `config.json`:**
+```json
+{
+  "mikrotik_routers": [
+    {
+      "id": "unique_router_id_1", // Auto-generated if not provided when adding via UI
+      "displayName": "Main Office Router",
+      "host": "192.168.88.1",
+      "port": 8728,
+      "username": "admin_user1",
+      "password": "router_password1",
+      "use_ssl": false,
+      "hotspot_login_url": "http://hotspot.mainoffice/login"
+    },
+    {
+      "id": "unique_router_id_2",
+      "displayName": "Branch Office Router",
+      "host": "10.0.1.1",
+      "port": 8729,
+      "username": "admin_user2",
+      "password": "router_password2",
+      "use_ssl": true,
+      "hotspot_login_url": "https://hotspot.branchoffice/login"
+    }
+  ],
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5000,
+    // ... other server settings
+  },
+  // ... other global settings (app_admin, database, scheduler)
+}
+```
+*   **`id`**: A unique identifier for the router. If you add routers via the UI and don't provide an ID, one will be generated automatically.
+*   **`displayName`**: A user-friendly name for the router, shown in the UI.
+*   Other fields (`host`, `port`, `username`, `password`, `use_ssl`, `hotspot_login_url`) are standard Mikrotik connection parameters.
+
+**Managing Routers:**
+*   Add, edit, delete, and select the active router to manage via the "Settings" tab in the web application.
+*   When using environment variables like `APP_MIKROTIK_HOST`, `APP_MIKROTIK_PORT`, etc., they will apply to the *first* router defined in the `mikrotik_routers` list in `config.json`. If the list is empty and these primary Mikrotik environment variables are set, a default router entry will be created and populated by these environment variables.
 
 ### `SECRET_KEY` Configuration
 For session security, Flask uses a `SECRET_KEY`.

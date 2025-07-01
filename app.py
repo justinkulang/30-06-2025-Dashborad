@@ -9,7 +9,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import timedelta, datetime
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func, cast, Date, extract
-from flask_migrate import Migrate # Import Flask-Migrate
+from flask_migrate import Migrate
+from flask_limiter import Limiter # Import Flask-Limiter
+from flask_limiter.util import get_remote_address # Import get_remote_address
+import sentry_sdk # Import Sentry SDK
+from sentry_sdk.integrations.flask import FlaskIntegration # Import Sentry FlaskIntegration
 import librouteros
 from librouteros.exceptions import TrapError
 import socket
@@ -25,6 +29,7 @@ import io
 import csv
 from flask import Response
 import base64
+import uuid # For generating unique router IDs
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -140,14 +145,9 @@ class ConfigLoader:
             "database": {
                 "uri": f"sqlite:///{os.path.join(get_base_path(), 'hotspot_analytics.db')}"
             },
-            "mikrotik": {
-                "host": "192.168.88.1",
-                "port": 8728,
-                "username": "admin",
-                "password": "",
-                "use_ssl": False,
-                "hotspot_login_url": "http://hotspot.setup/login"
-            },
+            "mikrotik_routers": [], # New structure: a list of router configurations
+            # Old "mikrotik": {} block is removed from defaults.
+            # Migration logic will handle conversion from old config.json format.
             "server": {
                 "host": "0.0.0.0",
                 "port": 5000,
@@ -164,81 +164,191 @@ class ConfigLoader:
 
         if os.path.exists(self.config_file):
             with open(self.config_file, 'r') as f:
-                loaded_config = json.load(f)
+                loaded_config_from_file = json.load(f)
+
+                # --- Automatic migration from old single 'mikrotik' object ---
+                migrated_config = False
+                if 'mikrotik' in loaded_config_from_file and isinstance(loaded_config_from_file['mikrotik'], dict) \
+                   and 'mikrotik_routers' not in loaded_config_from_file:
+
+                    old_mikrotik_config = loaded_config_from_file.pop('mikrotik') # Remove old key
+                    default_router_id = "migrated_router_1"
+                    default_display_name = "Migrated Default Router"
+
+                    # Ensure all expected keys are present, using defaults from default_config if necessary
+                    # (though default_config itself won't have these under 'mikrotik' anymore)
+                    # So, we rely on typical structure.
+                    migrated_router_entry = {
+                        "id": default_router_id,
+                        "displayName": default_display_name,
+                        "host": old_mikrotik_config.get("host", "192.168.88.1"),
+                        "port": old_mikrotik_config.get("port", 8728),
+                        "username": old_mikrotik_config.get("username", "admin"),
+                        "password": old_mikrotik_config.get("password", ""),
+                        "use_ssl": old_mikrotik_config.get("use_ssl", False),
+                        "hotspot_login_url": old_mikrotik_config.get("hotspot_login_url", "http://hotspot.setup/login")
+                    }
+                    loaded_config_from_file['mikrotik_routers'] = [migrated_router_entry]
+                    migrated_config = True
+                    print(f"[ConfigLoader] Migrated old 'mikrotik' config to 'mikrotik_routers' list with ID '{default_router_id}'.")
+                # --- End automatic migration ---
+
                 # Deep merge with default to ensure new keys are present
-                for key in ['scheduler', 'database', 'mikrotik', 'server', 'app_admin']:
-                    if key in loaded_config and isinstance(default_config.get(key), dict) and isinstance(loaded_config.get(key), dict):
-                        default_config[key].update(loaded_config[key])
-                    elif key in loaded_config: # Handle cases where the value might not be a dict (e.g. if a user manually edits it)
-                        default_config[key] = loaded_config[key]
+                keys_to_merge = ['scheduler', 'database', 'mikrotik_routers', 'server', 'app_admin']
+                for key in keys_to_merge:
+                    if key in loaded_config_from_file:
+                        if isinstance(default_config.get(key), dict) and isinstance(loaded_config_from_file.get(key), dict):
+                            default_config[key].update(loaded_config_from_file[key])
+                        elif key == 'mikrotik_routers' and isinstance(loaded_config_from_file.get(key), list):
+                            # For mikrotik_routers, if it exists in the file (possibly after migration), it replaces the default empty list.
+                            default_config[key] = loaded_config_from_file[key]
+                        elif isinstance(default_config.get(key), list) and isinstance(loaded_config_from_file.get(key), list):
+                            default_config[key] = loaded_config_from_file[key] # General list merge (e.g. if other lists are added)
+                        else:
+                            default_config[key] = loaded_config_from_file[key]
                 
-                return default_config
+                config_to_use = default_config # default_config has been updated
+
+                if migrated_config: # Save the migrated config back to file
+                    try:
+                        with open(self.config_file, 'w') as wf:
+                            json.dump(config_to_use, wf, indent=4) # Save the fully merged and migrated config
+                        print(f"[ConfigLoader] Saved migrated configuration to {self.config_file}")
+                    except Exception as e:
+                        print(f"[ConfigLoader] ERROR: Could not save migrated configuration to {self.config_file}: {e}")
+
         else:
             # If config file doesn't exist, write the full default_config
             with open(self.config_file, 'w') as f:
                 json.dump(default_config, f, indent=4)
-            config_to_use = default_config
+            config_to_use = default_config # Start with defaults
+
+
+        # --- Environment Variable Overrides ---
+        # Ensure mikrotik_routers list exists for env var processing
+        if 'mikrotik_routers' not in config_to_use:
+            config_to_use['mikrotik_routers'] = []
+
+        # If primary Mikrotik env vars are set and the list is currently empty,
+        # create a default router entry to be populated by these env vars.
+        if not config_to_use['mikrotik_routers'] and os.environ.get('APP_MIKROTIK_HOST'):
+            print("[ConfigLoader] APP_MIKROTIK_HOST is set and no routers defined; creating one from env vars.")
+            config_to_use['mikrotik_routers'].append({
+                "id": "env_default_router",
+                "displayName": "Router (from ENV)",
+                "host": "127.0.0.1", # Placeholder, will be overridden by env var
+                "port": 8728,       # Placeholder
+                "username": "admin",    # Placeholder
+                "password": "",         # Placeholder
+                "use_ssl": False,       # Placeholder
+                "hotspot_login_url": "" # Placeholder
+            })
 
         # Define environment variable mappings
-        # Format: (env_var_name, [config_path_keys], type_converter_func or None for string)
+        # Format: (env_var_name, [config_path_keys_without_index_for_routers], type_converter_func or None for string, is_mikrotik_router_var)
         env_var_map = [
-            ('APP_MIKROTIK_HOST', ['mikrotik', 'host'], None),
-            ('APP_MIKROTIK_PORT', ['mikrotik', 'port'], int),
-            ('APP_MIKROTIK_USERNAME', ['mikrotik', 'username'], None),
-            ('APP_MIKROTIK_PASSWORD', ['mikrotik', 'password'], None),
-            ('APP_MIKROTIK_USE_SSL', ['mikrotik', 'use_ssl'], lambda v: get_env_bool(v, config_to_use['mikrotik']['use_ssl'])),
-            ('APP_MIKROTIK_HOTSPOT_LOGIN_URL', ['mikrotik', 'hotspot_login_url'], None),
+            # Mikrotik vars will apply to the first router if list is not empty
+            ('APP_MIKROTIK_HOST', ['host'], None, True),
+            ('APP_MIKROTIK_PORT', ['port'], int, True),
+            ('APP_MIKROTIK_USERNAME', ['username'], None, True),
+            ('APP_MIKROTIK_PASSWORD', ['password'], None, True),
+            # For boolean SSL, the lambda needs access to the current value in the target router dict.
+            # This is complex here, so we'll handle it specially in the loop if it's a Mikrotik var.
+            ('APP_MIKROTIK_USE_SSL', ['use_ssl'], 'bool_special', True),
+            ('APP_MIKROTIK_HOTSPOT_LOGIN_URL', ['hotspot_login_url'], None, True),
 
-            ('APP_SERVER_HOST', ['server', 'host'], None),
-            ('APP_SERVER_PORT', ['server', 'port'], int),
-            ('APP_SERVER_DEBUG', ['server', 'debug'], lambda v: get_env_bool(v, config_to_use['server']['debug'])),
-            ('APP_SERVER_LOG_FILE', ['server', 'log_file'], None),
-            ('APP_SERVER_LOG_LEVEL_CONSOLE', ['server', 'log_level_console'], None),
-            ('APP_SERVER_LOG_LEVEL_FILE', ['server', 'log_level_file'], None),
+            ('APP_SERVER_HOST', ['server', 'host'], None, False),
+            ('APP_SERVER_PORT', ['server', 'port'], int, False),
+            ('APP_SERVER_DEBUG', ['server', 'debug'], lambda v: get_env_bool(v, config_to_use['server']['debug']), False),
+            ('APP_SERVER_LOG_FILE', ['server', 'log_file'], None, False),
+            ('APP_SERVER_LOG_LEVEL_CONSOLE', ['server', 'log_level_console'], None, False),
+            ('APP_SERVER_LOG_LEVEL_FILE', ['server', 'log_level_file'], None, False),
 
-            ('APP_DATABASE_URI', ['database', 'uri'], None),
+            ('APP_DATABASE_URI', ['database', 'uri'], None, False),
 
-            ('APP_SCHEDULER_ENABLED', ['scheduler', 'enabled'], lambda v: get_env_bool(v, config_to_use['scheduler']['enabled'])),
-            ('APP_SCHEDULER_JOB_INTERVAL_MINUTES', ['scheduler', 'job_interval_minutes'], int),
+            ('APP_SCHEDULER_ENABLED', ['scheduler', 'enabled'], lambda v: get_env_bool(v, config_to_use['scheduler']['enabled']), False),
+            ('APP_SCHEDULER_JOB_INTERVAL_MINUTES', ['scheduler', 'job_interval_minutes'], int, False),
 
-            ('APP_ADMIN_USERNAME', ['app_admin', 'username'], None),
-            # APP_ADMIN_PASSWORD_HASH is intentionally not here - managed by password change feature or initial setup.
+            ('APP_ADMIN_USERNAME', ['app_admin', 'username'], None, False),
         ]
 
-        for env_var, path_keys, converter in env_var_map:
+        for env_var, path_keys_or_mikrotik_key, converter, is_mikrotik_var in env_var_map:
             env_value = os.environ.get(env_var)
             if env_value is not None:
-                current_value_container = config_to_use
-                for key_part_index, key_part in enumerate(path_keys[:-1]):
-                    current_value_container = current_value_container.setdefault(key_part, {})
+                target_dict = None
+                final_key = None
+                original_value_path_for_logging = []
 
-                final_key = path_keys[-1]
-                original_value = current_value_container.get(final_key)
+                if is_mikrotik_var:
+                    if config_to_use['mikrotik_routers']: # If list is not empty
+                        target_dict = config_to_use['mikrotik_routers'][0]
+                        final_key = path_keys_or_mikrotik_key[0] # path_keys_or_mikrotik_key is like ['host']
+                        original_value_path_for_logging = ['mikrotik_routers', '0', final_key]
+                    else:
+                        # This case should ideally not be hit if the list was pre-populated for env vars
+                        print(f"[ConfigLoader] WARNING: Mikrotik env var '{env_var}' set, but no routers in config to apply to.")
+                        continue
+                else: # Not a Mikrotik router var, path_keys_or_mikrotik_key is a list of keys
+                    target_dict = config_to_use
+                    for key_part in path_keys_or_mikrotik_key[:-1]:
+                        target_dict = target_dict.setdefault(key_part, {})
+                    final_key = path_keys_or_mikrotik_key[-1]
+                    original_value_path_for_logging = path_keys_or_mikrotik_key
+
+                original_value = target_dict.get(final_key)
 
                 try:
+                    converted_value = None
                     if converter is int:
                         converted_value = int(env_value)
-                    elif callable(converter) and converter.__name__ == '<lambda>': # For get_env_bool via lambda
+                    elif converter == 'bool_special': # Special handling for mikrotik.use_ssl
+                         # Default to current value if env_value is None (it won't be here, but good pattern)
+                        default_for_bool = target_dict.get(final_key, False) if target_dict else False
+                        converted_value = get_env_bool(env_value, default_for_bool)
+                    elif callable(converter) and converter.__name__ == '<lambda>': # For other get_env_bool via lambda
                         converted_value = converter(env_value)
                     elif converter is None: # string
                         converted_value = env_value
-                    else: # Should not happen with current map
+                    else: # Should not happen
                         converted_value = env_value
 
-                    current_value_container[final_key] = converted_value
-                    # Use a temporary logger instance or print for setup phase logging if main logger not ready
-                    print(f"[ConfigLoader] Configuration: '{'.'.join(path_keys)}' overridden by environment variable '{env_var}'. New value: '{converted_value}' (was: '{original_value}')")
+                    target_dict[final_key] = converted_value
+                    log_path_str = '.'.join(str(p) for p in original_value_path_for_logging)
+                    print(f"[ConfigLoader] Configuration: '{log_path_str}' overridden by env var '{env_var}'. New value: '{converted_value}' (was: '{original_value}')")
                 except ValueError as e:
-                    print(f"[ConfigLoader] WARNING: Could not convert environment variable '{env_var}' (value: '{env_value}') to required type for '{'.'.join(path_keys)}'. Error: {e}. Using previous value: '{original_value}'.")
+                    log_path_str = '.'.join(str(p) for p in original_value_path_for_logging)
+                    print(f"[ConfigLoader] WARNING: Could not convert env var '{env_var}' (value: '{env_value}') for '{log_path_str}'. Error: {e}. Using previous: '{original_value}'.")
 
         return config_to_use
 
     def get_config(self):
         return self.config
 
+    def get_all_router_configs(self) -> list[dict]:
+        """Returns a list of all router configurations, excluding passwords."""
+        routers = self.config.get('mikrotik_routers', [])
+        # Return a list of copies, with password excluded for safety
+        return [
+            {k: v for k, v in router.items() if k != 'password'}
+            for router in routers
+        ]
+
+    def get_router_config_by_id(self, router_id: str) -> dict | None:
+        """Returns the full configuration for a specific router_id, including password."""
+        routers = self.config.get('mikrotik_routers', [])
+        for router in routers:
+            if router.get('id') == router_id:
+                return router.copy() # Return a copy
+        return None
+
     def update_config(self, new_config):
-        self.config['mikrotik'].update(new_config.get('mikrotik', {}))
-        self.config['server'].update(new_config.get('server', {}))
+        # This method might need review if 'mikrotik' (single) vs 'mikrotik_routers' (list) is passed.
+        # For now, assuming it's for general server settings, not direct multi-router management.
+        # The add/update/delete_router_config methods will handle mikrotik_routers list.
+        # self.config['mikrotik'].update(new_config.get('mikrotik', {})) # Old line
+        if 'server' in new_config: # Only update server settings through this generic method for now
+            self.config['server'].update(new_config.get('server', {}))
+        # Other top-level keys like 'scheduler', 'database' could be handled similarly if needed.
         with open(self.config_file, 'w') as f:
             json.dump(self.config, f, indent=4)
 
@@ -290,6 +400,103 @@ class ConfigLoader:
             logger.info("Admin credentials saved to configuration file.")
         return updated
 
+    def _save_config(self):
+        """Internal helper to save the current self.config to file."""
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.config, f, indent=4)
+            logger.info("Configuration saved to file.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save configuration to {self.config_file}: {e}", exc_info=True)
+            return False
+
+    def add_router_config(self, router_details: dict) -> str | None:
+        """Adds a new router configuration. Returns the new router's ID or None on failure."""
+        if 'mikrotik_routers' not in self.config or not isinstance(self.config['mikrotik_routers'], list):
+            self.config['mikrotik_routers'] = [] # Initialize if missing or wrong type
+
+        # Validate required fields
+        if not all(k in router_details for k in ['displayName', 'host', 'port', 'username']):
+            logger.error("add_router_config: Missing required fields (displayName, host, port, username).")
+            return None
+
+        new_id = router_details.get('id')
+        if not new_id:
+            new_id = uuid.uuid4().hex # Generate a unique ID
+        elif any(r.get('id') == new_id for r in self.config['mikrotik_routers']):
+            logger.error(f"add_router_config: Router ID '{new_id}' already exists.")
+            # Optionally, could append a short random string to make it unique, or just fail.
+            # For now, fail if user-provided ID is not unique.
+            return None
+
+        # Ensure all expected fields are present, using defaults for optional ones
+        new_router_config = {
+            "id": new_id,
+            "displayName": router_details.get('displayName'),
+            "host": router_details.get('host'),
+            "port": int(router_details.get('port', 8728)), # Default port
+            "username": router_details.get('username'),
+            "password": router_details.get('password', ""), # Default empty password
+            "use_ssl": router_details.get('use_ssl', False), # Default no SSL
+            "hotspot_login_url": router_details.get('hotspot_login_url', "") # Default empty
+        }
+
+        self.config['mikrotik_routers'].append(new_router_config)
+        if self._save_config():
+            logger.info(f"Added new router configuration with ID: {new_id}")
+            return new_id
+        return None
+
+    def update_router_config(self, router_id: str, updated_details: dict) -> bool:
+        """Updates an existing router configuration. ID cannot be changed."""
+        if 'mikrotik_routers' not in self.config:
+            return False # Should not happen if initialized correctly
+
+        router_index = -1
+        for i, router in enumerate(self.config['mikrotik_routers']):
+            if router.get('id') == router_id:
+                router_index = i
+                break
+
+        if router_index == -1:
+            logger.warning(f"update_router_config: Router with ID '{router_id}' not found.")
+            return False
+
+        # Update allowed fields. Do not allow 'id' to be changed.
+        current_config = self.config['mikrotik_routers'][router_index]
+        for key, value in updated_details.items():
+            if key in current_config and key != 'id': # Only update existing, settable keys
+                if key == 'port':
+                    try:
+                        current_config[key] = int(value)
+                    except ValueError:
+                        logger.warning(f"update_router_config: Invalid port value '{value}' for router '{router_id}'. Skipping port update.")
+                elif key == 'use_ssl':
+                    current_config[key] = str(value).lower() in ['true', '1', 'yes', 'y']
+                else:
+                    current_config[key] = value
+
+        logger.info(f"Updated router configuration for ID: {router_id}")
+        return self._save_config()
+
+    def delete_router_config(self, router_id: str) -> bool:
+        """Deletes a router configuration by its ID."""
+        if 'mikrotik_routers' not in self.config:
+            return False
+
+        original_length = len(self.config['mikrotik_routers'])
+        self.config['mikrotik_routers'] = [
+            router for router in self.config['mikrotik_routers'] if router.get('id') != router_id
+        ]
+
+        if len(self.config['mikrotik_routers']) < original_length:
+            logger.info(f"Deleted router configuration with ID: {router_id}")
+            return self._save_config()
+        else:
+            logger.warning(f"delete_router_config: Router with ID '{router_id}' not found for deletion.")
+            return False
+
 
 # Initialize ConfigLoader
 config_loader = ConfigLoader()
@@ -306,12 +513,47 @@ if app.config['SECRET_KEY'] == SECRET_KEY_FALLBACK:
         logger.warning("WARNING: FLASK_SECRET_KEY environment variable not set. Using a default, insecure key for development. "
                        "Ensure this is set for any production deployment.")
 
+# Initialize Sentry (if DSN is provided)
+SENTRY_DSN = os.environ.get('SENTRY_DSN')
+if SENTRY_DSN:
+    try:
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            integrations=[FlaskIntegration()],
+            # Set traces_sample_rate to 1.0 to capture 100%
+            # of transactions for performance monitoring.
+            # Adjust as needed for production.
+            traces_sample_rate=app_config.get('server',{}).get('sentry_traces_sample_rate', 0.2), # Default to 0.2 if not in config
+            # Set profiles_sample_rate to similar value to capture profiling data
+            profiles_sample_rate=app_config.get('server',{}).get('sentry_profiles_sample_rate', 0.2),
+            environment= "development" if app_config.get('server', {}).get('debug', False) else "production",
+            # Optionally, send PII data by uncommenting the line below
+            # send_default_pii=True
+        )
+        logger.info("Sentry SDK initialized.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Sentry SDK: {e}", exc_info=True)
+else:
+    logger.info("SENTRY_DSN not found. Sentry SDK not initialized.")
+
+
 # Set SQLAlchemy Database URI from loaded config
 app.config['SQLALCHEMY_DATABASE_URI'] = app_config.get('database', {}).get('uri', f"sqlite:///{os.path.join(get_base_path(), 'hotspot_analytics_fallback.db')}")
 logger.info(f"SQLAlchemy Database URI set to: {app.config['SQLALCHEMY_DATABASE_URI']}")
 
 db.init_app(app)
 migrate = Migrate(app, db) # Initialize Flask-Migrate
+
+# Initialize Flask-Limiter
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour", "10 per minute"], # General default limits
+    storage_uri="memory://", # For simplicity. Use Redis or other persistent storage in production.
+    # strategy="fixed-window" # Default strategy is fixed-window, which is fine for now.
+    # default_limits_exempt_when=lambda: current_user.is_authenticated and current_user.is_admin() # Example if you had roles
+    # default_limits_per_method=True # Apply limits per HTTP method
+)
 
 # --- Setup Logging Handlers (after app_config is available) ---
 def setup_logging(app_config_instance):
@@ -749,87 +991,87 @@ def download_batch_vouchers_pdf():
              return jsonify({'success': False, 'message': 'PDF generation failed on server due to missing dependencies. Please check server logs.'}), 500
         return jsonify({'success': False, 'message': f'An unexpected error occurred during PDF generation: {str(e)}'}), 500
 
-def get_mikrotik_api():
-    """Establishes and returns a single Mikrotik API connection per request."""
-    logger.debug(f"get_mikrotik_api: Current Mikrotik config host from module-level app_config: {app_config['mikrotik'].get('host')}")
-    if 'mikrotik_api' not in g:
-        logger.debug("get_mikrotik_api: 'mikrotik_api' not in g. Attempting new connection.")
-        # Fetch the latest config directly from the loader instance for new connections
-        current_loaded_config = config_loader.get_config() 
-        mikrotik_config = current_loaded_config['mikrotik']
-        logger.debug(f"get_mikrotik_api: Using host from config_loader.get_config(): {mikrotik_config.get('host')}")
+def get_mikrotik_api(router_id: str):
+    """Establishes and returns a Mikrotik API connection for a specific router_id."""
+    if not router_id:
+        logger.error("get_mikrotik_api: router_id not provided.")
+        return None
+
+    # Initialize connections cache in g if it doesn't exist
+    if 'mikrotik_connections_cache' not in g:
+        g.mikrotik_connections_cache = {}
+
+    # Check if connection for this router_id already exists in g for this request
+    if router_id in g.mikrotik_connections_cache:
+        logger.debug(f"get_mikrotik_api: Reusing existing API connection for router_id '{router_id}' from 'g'.")
+        return g.mikrotik_connections_cache[router_id]
+
+    logger.debug(f"get_mikrotik_api: Attempting new connection for router_id '{router_id}'.")
+
+    router_config = config_loader.get_router_config_by_id(router_id)
+    if not router_config:
+        logger.error(f"get_mikrotik_api: No configuration found for router_id '{router_id}'.")
+        return None
         
-        host, port, username, password, use_ssl = (
-            mikrotik_config['host'], mikrotik_config['port'],
-            mikrotik_config['username'], mikrotik_config['password'],
-            mikrotik_config.get('use_ssl', False)
+    host = router_config.get('host')
+    port = router_config.get('port')
+    username = router_config.get('username')
+    password = router_config.get('password', "") # Default to empty string if not present
+    use_ssl = router_config.get('use_ssl', False)
+
+    if not all([host, port is not None, username is not None]): # Password can be empty
+        logger.error(f"get_mikrotik_api: Incomplete configuration for router_id '{router_id}' (missing host, port, or username).")
+        return None
+        
+    logger.info(f"Attempting to connect to Mikrotik (ID: {router_id}): {host}:{port} (SSL: {use_ssl})")
+    api_connection_object = None
+    try:
+        api_connection_object = librouteros.connect(
+            host=host, username=username, password=password, port=int(port), ssl=use_ssl, timeout=10
         )
-        # Basic check for placeholder/default config before attempting connection
-        if host == "192.168.88.1" and username == "admin" and password == "" and not os.path.exists(config_loader.config_file):
-             logger.warning("get_mikrotik_api: Attempting to connect with default placeholder config and no config file saved yet. Connection will likely fail or use defaults.")
-        
-        logger.info(f"Attempting to connect to Mikrotik: {host}:{port} (SSL: {use_ssl})")
-        api_connection_object = None  # Temporary holder for the connection object
-        try:
-            api_connection_object = librouteros.connect(
-                host=host, username=username, password=password, port=port, ssl=use_ssl
-            )
-            # If connect succeeds, then assign to g
-            g.mikrotik_connection = api_connection_object
-            g.mikrotik_api = api_connection_object # In librouteros, connect() returns the api object directly
-            logger.info("Mikrotik connection established successfully in get_mikrotik_api.")
-        except (librouteros.exceptions.LibRouterosError, TrapError, socket.error, ConnectionRefusedError, OSError) as e:
-            logger.error(f"Mikrotik connection failed in get_mikrotik_api: {type(e).__name__} - {e}")
-            if api_connection_object: # If connect() returned an object before erroring or during partial setup
-                try:
-                    logger.debug("Attempting to close potentially partial Mikrotik connection object after failure.")
-                    api_connection_object.close()
-                except Exception as close_e:
-                    logger.error(f"Error closing partial Mikrotik connection object: {close_e}")
-            g.mikrotik_api = None
-            g.pop('mikrotik_connection', None) # Ensure it's removed from g
-        except Exception as e: # Catch any other unexpected error during connection
-            logger.error(f"Unexpected generic error during Mikrotik connection in get_mikrotik_api: {type(e).__name__} - {e}")
-            if api_connection_object: # If connect() returned an object before erroring
-                try:
-                    logger.debug("Attempting to close potentially partial Mikrotik connection (generic exception).")
-                    api_connection_object.close()
-                except Exception as close_e:
-                    logger.error(f"Error closing partial Mikrotik connection (generic exception): {close_e}")
-            g.mikrotik_api = None
-            g.pop('mikrotik_connection', None) # Ensure it's removed from g
-    else:
-        # This 'else' case should ideally not be hit frequently if teardown_connection runs after each request.
-        # If it is hit, it implies g.mikrotik_api persisted, which means teardown might not have run.
-        # For safety, we could add a check here too, but the primary model is new connection per request.
-        logger.warning("get_mikrotik_api: Reusing existing Mikrotik API from 'g'. This is unexpected with current teardown logic.")
-        # Potentially add a health check for existing g.mikrotik_api here if this path becomes common.
-        # For now, assume teardown works and this path is rare.
-    
-    api_to_return = g.get('mikrotik_api', None)
-    logger.debug(f"get_mikrotik_api: Returning API object: {'Exists' if api_to_return else 'None'}")
-    return api_to_return
+        g.mikrotik_connections_cache[router_id] = api_connection_object
+        logger.info(f"Mikrotik connection for router_id '{router_id}' established successfully.")
+        return api_connection_object
+    except (librouteros.exceptions.LibRouterosError, TrapError, socket.error, ConnectionRefusedError, OSError, ValueError) as e:
+        logger.error(f"Mikrotik connection for router_id '{router_id}' failed: {type(e).__name__} - {e}")
+        if api_connection_object:
+            try: api_connection_object.close()
+            except: pass # Ignore errors on close after failure
+        # Do not store None in cache for failed attempts, so next try will re-attempt.
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected generic error during Mikrotik connection for router_id '{router_id}': {type(e).__name__} - {e}", exc_info=True)
+        if api_connection_object:
+            try: api_connection_object.close()
+            except: pass
+        return None
 
 @app.teardown_appcontext
-def teardown_connection(exception):
-    """Closes the Mikrotik connection after each request."""
-    mikrotik_connection = g.pop('mikrotik_connection', None)
-    if mikrotik_connection:
-        mikrotik_connection.close()
-        logger.info("Mikrotik connection closed.")
+def teardown_connections(exception): # Renamed to reflect multiple connections
+    """Closes all Mikrotik connections stored in 'g' after each request."""
+    connections_cache = g.pop('mikrotik_connections_cache', None)
+    if connections_cache:
+        for router_id, conn in connections_cache.items():
+            if conn:
+                try:
+                    conn.close()
+                    logger.info(f"Mikrotik connection for router_id '{router_id}' closed.")
+                except Exception as e:
+                    logger.error(f"Error closing connection for router_id '{router_id}': {e}")
 
 
 class RouterOSService:
     """Service class for all Mikrotik RouterOS interactions."""
     def __init__(self):
-        pass # Connection is managed globally via get_mikrotik_api
+        # No router_id stored here, as each method call will specify it.
+        pass
 
-    def test_connection(self) -> tuple[bool, str]:
-        """Test connection to Mikrotik router."""
+    def test_connection(self, router_id: str) -> tuple[bool, str]:
+        """Test connection to a specific Mikrotik router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Connection failed: Could not establish API session. Check config and router status."
+                return False, f"Connection failed for router ID '{router_id}': Could not establish API session. Check config and router status."
             identity_records = list(api.path('system', 'identity').select('name'))
 
             router_name = 'Mikrotik Router'
@@ -844,12 +1086,12 @@ class RouterOSService:
             logger.error(f"Unexpected error during connection test: {str(e)}")
             return False, f"Unexpected error during connection test: {str(e)}"
 
-    def get_hotspot_users(self) -> list:
-        """Get all hotspot users."""
+    def get_hotspot_users(self, router_id: str) -> list:
+        """Get all hotspot users for a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                logger.error("Error getting users: Mikrotik API not available.")
+                logger.error(f"Error getting users for router '{router_id}': Mikrotik API not available.")
                 return []
             users = list(api.path('ip', 'hotspot', 'user').select(
                 '.id', 'name', 'password', 'profile', 'disabled', 'limit-uptime', 'limit-bytes-total',
@@ -857,29 +1099,29 @@ class RouterOSService:
             ))
             return users
         except Exception as e:
-            logger.error(f"Error getting users: {str(e)}")
+            logger.error(f"Error getting users for router '{router_id}': {str(e)}")
             return []
 
-    def create_hotspot_user(self, user_data: dict) -> tuple[bool, str]:
-        """Create new hotspot user."""
+    def create_hotspot_user(self, router_id: str, user_data: dict) -> tuple[bool, str]:
+        """Create new hotspot user on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
+                return False, f"Mikrotik connection not available for router '{router_id}'"
             # Clean up potential None values before sending to router
             valid_user_data = {k: v for k, v in user_data.items() if v is not None}
             api.path('ip', 'hotspot', 'user').add(**valid_user_data)
             return True, "User created successfully"
         except (TrapError, Exception) as e:
-            logger.error(f"Error creating user: {str(e)}")
+            logger.error(f"Error creating user on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
 
-    def edit_hotspot_user(self, username: str, new_data: dict) -> tuple[bool, str]:
-        """Edit existing hotspot user."""
+    def edit_hotspot_user(self, router_id: str, username: str, new_data: dict) -> tuple[bool, str]:
+        """Edit existing hotspot user on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
+                return False, f"Mikrotik connection not available for router '{router_id}'"
             users = list(api.path('ip', 'hotspot', 'user').select('.id').where(name=username))
             if not users:
                 return False, "User not found"
@@ -888,15 +1130,15 @@ class RouterOSService:
             api.path('ip', 'hotspot', 'user').set(**new_data, **{'.id': user_id})
             return True, "User updated successfully"
         except (TrapError, Exception) as e:
-            logger.error(f"Error editing user '{username}': {str(e)}")
+            logger.error(f"Error editing user '{username}' on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
 
-    def delete_hotspot_user(self, username: str) -> tuple[bool, str]:
-        """Delete hotspot user."""
+    def delete_hotspot_user(self, router_id: str, username: str) -> tuple[bool, str]:
+        """Delete hotspot user on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
+                return False, f"Mikrotik connection not available for router '{router_id}'"
             users = list(api.path('ip', 'hotspot', 'user').select('.id').where(name=username))
             if not users:
                 return False, "User not found"
@@ -905,15 +1147,15 @@ class RouterOSService:
             api.path('ip', 'hotspot', 'user').remove(user_id)
             return True, "User deleted successfully"
         except (TrapError, Exception) as e:
-            logger.error(f"Error deleting user '{username}': {str(e)}")
+            logger.error(f"Error deleting user '{username}' on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
     
-    def get_active_sessions(self) -> list:
-        """Get active hotspot sessions."""
+    def get_active_sessions(self, router_id: str) -> list:
+        """Get active hotspot sessions for a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                logger.error("Error getting active sessions: Mikrotik API not available.")
+                logger.error(f"Error getting active sessions for router '{router_id}': Mikrotik API not available.")
                 return []
             sessions = list(api.path('ip', 'hotspot', 'active').select(
                 'user', 'address', 'mac-address', 'uptime', 'bytes-in', 'bytes-out',
@@ -921,27 +1163,27 @@ class RouterOSService:
             ))
             return sessions
         except Exception as e:
-            logger.error(f"Error getting active sessions: {str(e)}")
+            logger.error(f"Error getting active sessions for router '{router_id}': {str(e)}")
             return []
 
-    def disconnect_user(self, active_id: str) -> tuple[bool, str]:
-        """Disconnect active user session by its .id."""
+    def disconnect_user(self, router_id: str, active_id: str) -> tuple[bool, str]:
+        """Disconnect active user session by its .id on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
+                return False, f"Mikrotik connection not available for router '{router_id}'"
             api.path('ip', 'hotspot', 'active').remove(active_id)
             return True, "User disconnected successfully"
         except (TrapError, Exception) as e:
-            logger.error(f"Error disconnecting user: {str(e)}")
+            logger.error(f"Error disconnecting user on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
 
-    def get_user_profiles(self) -> list:
-        """Get hotspot user profiles."""
+    def get_user_profiles(self, router_id: str) -> list:
+        """Get hotspot user profiles for a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                logger.error("Error getting profiles: Mikrotik API not available.")
+                logger.error(f"Error getting profiles for router '{router_id}': Mikrotik API not available.")
                 return []
             profiles = list(api.path('ip', 'hotspot', 'user', 'profile').select(
                 '.id', 'name', 'rate-limit', 'session-timeout', 'shared-users',
@@ -949,44 +1191,45 @@ class RouterOSService:
             ))
             return profiles
         except Exception as e:
-            logger.error(f"Error getting profiles: {str(e)}")
+            logger.error(f"Error getting profiles for router '{router_id}': {str(e)}")
             return []
     
-    def create_hotspot_profile(self, profile_data: dict) -> tuple[bool, str]:
-        """Creates a new hotspot user profile."""
+    def create_hotspot_profile(self, router_id: str, profile_data: dict) -> tuple[bool, str]:
+        """Creates a new hotspot user profile on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
+                return False, f"Mikrotik connection not available for router '{router_id}'"
             data_to_add = {k: v for k, v in profile_data.items() if v}
             api.path('ip', 'hotspot', 'user', 'profile').add(**data_to_add)
             return True, f"Profile '{profile_data['name']}' created successfully."
         except (TrapError, Exception) as e:
-            logger.error(f"Error creating profile: {str(e)}")
+            logger.error(f"Error creating profile on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
 
-    def edit_hotspot_profile(self, profile_id: str, new_data: dict) -> tuple[bool, str]:
-        """Edits an existing hotspot user profile."""
+    def edit_hotspot_profile(self, router_id: str, profile_id_on_router: str, new_data: dict) -> tuple[bool, str]:
+        """Edits an existing hotspot user profile on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
-            api.path('ip', 'hotspot', 'user', 'profile').set(**new_data, **{'.id': profile_id})
+                return False, f"Mikrotik connection not available for router '{router_id}'"
+            # Note: profile_id_on_router is the .id from the Mikrotik device for that profile
+            api.path('ip', 'hotspot', 'user', 'profile').set(**new_data, **{'.id': profile_id_on_router})
             return True, "Profile updated successfully."
         except (TrapError, Exception) as e:
-            logger.error(f"Error editing profile: {str(e)}")
+            logger.error(f"Error editing profile ID '{profile_id_on_router}' on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
 
-    def delete_hotspot_profile(self, profile_id: str) -> tuple[bool, str]:
-        """Deletes a hotspot user profile."""
+    def delete_hotspot_profile(self, router_id: str, profile_id_on_router: str) -> tuple[bool, str]:
+        """Deletes a hotspot user profile on a specific router."""
         try:
-            api = get_mikrotik_api()
+            api = get_mikrotik_api(router_id=router_id)
             if api is None:
-                return False, "Mikrotik connection not available"
-            api.path('ip', 'hotspot', 'user', 'profile').remove(profile_id)
+                return False, f"Mikrotik connection not available for router '{router_id}'"
+            api.path('ip', 'hotspot', 'user', 'profile').remove(profile_id_on_router)
             return True, "Profile deleted successfully."
         except (TrapError, Exception) as e:
-            logger.error(f"Error deleting profile: {str(e)}")
+            logger.error(f"Error deleting profile ID '{profile_id_on_router}' on router '{router_id}': {str(e)}")
             return False, f"Mikrotik Error: {str(e)}"
     
     def _parse_ros_time(self, time_str: str) -> int:
@@ -1004,19 +1247,16 @@ class RouterOSService:
             elif unit == 's': total_seconds += value
         return total_seconds
 
-    def find_and_delete_expired_users(self) -> tuple[bool, str, int]:
-        """Finds and deletes users who have exceeded their time or data limits."""
+    def find_and_delete_expired_users(self, router_id: str) -> tuple[bool, str, int]:
+        """Finds and deletes users who have exceeded their time or data limits on a specific router."""
         try:
-            api = get_mikrotik_api()
-            if api is None: # Check if API connection failed initially
-                return False, "Mikrotik connection not available", 0
+            api = get_mikrotik_api(router_id=router_id)
+            if api is None:
+                return False, f"Mikrotik connection not available for router '{router_id}'", 0
             
-            users = self.get_hotspot_users() 
-            # get_hotspot_users itself will return [] if api was None, so this is safe.
-            # However, if api was None for this call but not for the initial api check,
-            # we might want to re-check. But the current pattern is one api per request.
-            if not users and api is None: # If users list is empty because api became None
-                 return False, "Mikrotik connection not available (users fetch failed)", 0
+            users = self.get_hotspot_users(router_id=router_id)
+            if not users and get_mikrotik_api(router_id=router_id) is None: # Re-check if API became None during users fetch
+                 return False, f"Mikrotik connection not available for router '{router_id}' (users fetch failed)", 0
 
             deleted_count = 0
             errors = []
@@ -1055,9 +1295,9 @@ class RouterOSService:
             logger.error(f"Error during expired user cleanup: {str(e)}")
             return False, f"An unexpected error occurred: {str(e)}", 0
 
-    def get_basic_bandwidth_analytics(self) -> dict:
-        """Calculates basic bandwidth analytics from hotspot user data."""
-        users = self.get_hotspot_users() # This already handles API non-availability by returning []
+    def get_basic_bandwidth_analytics(self, router_id: str) -> dict:
+        """Calculates basic bandwidth analytics from hotspot user data for a specific router."""
+        users = self.get_hotspot_users(router_id=router_id)
         
         default_analytics = {
             'total_data_all_users': 0,
@@ -1105,15 +1345,15 @@ class RouterOSService:
             'data_usage_by_profile': data_by_profile
         }
 
-    def delete_users_by_profile(self, profile_name: str) -> tuple[bool, str, int]:
-        """Deletes hotspot users belonging to a specific profile."""
-        api = get_mikrotik_api()
+    def delete_users_by_profile(self, router_id: str, profile_name: str) -> tuple[bool, str, int]:
+        """Deletes hotspot users belonging to a specific profile on a specific router."""
+        api = get_mikrotik_api(router_id=router_id)
         if api is None:
-            return False, "Mikrotik connection not available", 0
+            return False, f"Mikrotik connection not available for router '{router_id}'", 0
 
-        users = self.get_hotspot_users()
-        if not users and get_mikrotik_api() is None: # Re-check API status if user list is empty
-            return False, "Mikrotik connection not available (users fetch failed)", 0
+        users = self.get_hotspot_users(router_id=router_id)
+        if not users and get_mikrotik_api(router_id=router_id) is None:
+            return False, f"Mikrotik connection not available for router '{router_id}' (users fetch failed)", 0
 
         deleted_count = 0
         failed_count = 0
@@ -1140,15 +1380,15 @@ class RouterOSService:
         
         return True, message, deleted_count
 
-    def delete_users_by_active_status(self, is_disabled: bool) -> tuple[bool, str, int]:
-        """Deletes hotspot users based on their active (enabled/disabled) status."""
-        api = get_mikrotik_api()
+    def delete_users_by_active_status(self, router_id: str, is_disabled: bool) -> tuple[bool, str, int]:
+        """Deletes hotspot users based on their active (enabled/disabled) status on a specific router."""
+        api = get_mikrotik_api(router_id=router_id)
         if api is None:
-            return False, "Mikrotik connection not available", 0
+            return False, f"Mikrotik connection not available for router '{router_id}'", 0
 
-        users = self.get_hotspot_users()
-        if not users and get_mikrotik_api() is None: # Re-check API status if user list is empty
-            return False, "Mikrotik connection not available (users fetch failed)", 0
+        users = self.get_hotspot_users(router_id=router_id)
+        if not users and get_mikrotik_api(router_id=router_id) is None:
+            return False, f"Mikrotik connection not available for router '{router_id}' (users fetch failed)", 0
 
         deleted_count = 0
         failed_count = 0
@@ -1309,20 +1549,17 @@ class RouterOSService:
         } for log in logs]
 
     # --- Bulk Action Service Methods ---
-    def bulk_delete_hotspot_users(self, usernames: list[str]) -> tuple[int, int, list[str]]:
-        """Deletes a list of hotspot users by their usernames."""
-        api = get_mikrotik_api()
+    def bulk_delete_hotspot_users(self, router_id: str, usernames: list[str]) -> tuple[int, int, list[str]]:
+        """Deletes a list of hotspot users by their usernames on a specific router."""
+        api = get_mikrotik_api(router_id=router_id)
         if api is None:
-            logger.error("Bulk delete: Mikrotik API not available.")
+            logger.error(f"Bulk delete for router '{router_id}': Mikrotik API not available.")
             return 0, len(usernames), usernames # success_count, fail_count, failed_usernames
 
         success_count = 0
         failed_usernames = []
         
-        # Fetch all user IDs first to minimize API calls if direct ID removal is faster
-        # However, librouteros client might not support bulk removal by a list of IDs directly.
-        # Iterative removal by username is standard.
-        all_users_details = {user['name']: user['.id'] for user in self.get_hotspot_users()}
+        all_users_details = {user['name']: user['.id'] for user in self.get_hotspot_users(router_id=router_id)}
 
         for username in usernames:
             user_id_to_delete = all_users_details.get(username)
@@ -1340,11 +1577,11 @@ class RouterOSService:
         
         return success_count, len(failed_usernames), failed_usernames
 
-    def bulk_set_user_disabled_status(self, usernames: list[str], disabled: bool) -> tuple[int, int, list[str]]:
-        """Enables or disables a list of hotspot users."""
-        api = get_mikrotik_api()
+    def bulk_set_user_disabled_status(self, router_id: str, usernames: list[str], disabled: bool) -> tuple[int, int, list[str]]:
+        """Enables or disables a list of hotspot users on a specific router."""
+        api = get_mikrotik_api(router_id=router_id)
         if api is None:
-            logger.error(f"Bulk set disabled status: Mikrotik API not available.")
+            logger.error(f"Bulk set disabled status for router '{router_id}': Mikrotik API not available.")
             return 0, len(usernames), usernames
 
         success_count = 0
@@ -1352,7 +1589,7 @@ class RouterOSService:
         disabled_str = 'true' if disabled else 'false'
         action_str = "disable" if disabled else "enable"
         
-        all_users_details = {user['name']: user['.id'] for user in self.get_hotspot_users()}
+        all_users_details = {user['name']: user['.id'] for user in self.get_hotspot_users(router_id=router_id)}
 
         for username in usernames:
             user_id_to_update = all_users_details.get(username)
@@ -1370,25 +1607,23 @@ class RouterOSService:
                 
         return success_count, len(failed_usernames), failed_usernames
 
-    def bulk_change_user_profile(self, usernames: list[str], new_profile: str) -> tuple[int, int, list[str]]:
-        """Changes the profile for a list of hotspot users."""
-        api = get_mikrotik_api()
+    def bulk_change_user_profile(self, router_id: str, usernames: list[str], new_profile: str) -> tuple[int, int, list[str]]:
+        """Changes the profile for a list of hotspot users on a specific router."""
+        api = get_mikrotik_api(router_id=router_id)
         if api is None:
-            logger.error("Bulk change profile: Mikrotik API not available.")
+            logger.error(f"Bulk change profile for router '{router_id}': Mikrotik API not available.")
             return 0, len(usernames), usernames
 
-        # Validate if profile exists (optional, but good practice)
-        available_profiles = [p['name'] for p in self.get_user_profiles()]
+        # Validate if profile exists on the target router
+        available_profiles = [p['name'] for p in self.get_user_profiles(router_id=router_id)]
         if new_profile not in available_profiles:
-            logger.error(f"Bulk change profile: Target profile '{new_profile}' does not exist.")
-            # Treat this as a global failure for this operation, or fail all users.
-            # For now, let's assume the frontend validates this, or we fail all.
-            return 0, len(usernames), usernames 
+            logger.error(f"Bulk change profile for router '{router_id}': Target profile '{new_profile}' does not exist on this router.")
+            return 0, len(usernames), usernames # Fail all if profile doesn't exist on target router
 
         success_count = 0
         failed_usernames = []
         
-        all_users_details = {user['name']: user['.id'] for user in self.get_hotspot_users()}
+        all_users_details = {user['name']: user['.id'] for user in self.get_hotspot_users(router_id=router_id)}
 
         for username in usernames:
             user_id_to_update = all_users_details.get(username)
@@ -1406,11 +1641,11 @@ class RouterOSService:
                 
         return success_count, len(failed_usernames), failed_usernames
 
-    def get_interface_traffic(self, interface_name: str) -> dict | None:
-        """Fetches Rx/Tx byte counters for a specific interface."""
-        api = get_mikrotik_api()
+    def get_interface_traffic(self, router_id: str, interface_name: str) -> dict | None:
+        """Fetches Rx/Tx byte counters for a specific interface on a specific router."""
+        api = get_mikrotik_api(router_id=router_id)
         if not api:
-            logger.error("get_interface_traffic: Mikrotik API not available.")
+            logger.error(f"get_interface_traffic for router '{router_id}': Mikrotik API not available.")
             return None
 
         try:
@@ -1463,11 +1698,11 @@ class RouterOSService:
             logger.error(f"get_interface_traffic: Unexpected error for interface '{interface_name}': {e}", exc_info=True)
             return None
 
-    def get_router_system_health(self) -> dict | None:
-        """Fetches system health information from the Mikrotik router."""
-        api = get_mikrotik_api()
+    def get_router_system_health(self, router_id: str) -> dict | None:
+        """Fetches system health information from a specific Mikrotik router."""
+        api = get_mikrotik_api(router_id=router_id)
         if not api:
-            logger.error("get_router_system_health: Mikrotik API not available.")
+            logger.error(f"get_router_system_health for router '{router_id}': Mikrotik API not available.")
             return None
 
         health_info = {
@@ -1606,8 +1841,18 @@ def login_page():
     # For now, we assume JS will fetch it or have it available (see login.html modifications).
     return render_template('login.html')
 
+@app.route('/health')
+@limiter.exempt # Exempt health check from rate limiting
+def health_check():
+    """Health check endpoint."""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }), 200
+
 
 @app.route('/app-login', methods=['POST'])
+@limiter.limit("10 per minute") # Stricter limit for login attempts
 # This route is already protected by default by Flask-WTF's CSRF protection for POST requests.
 # No need to add @csrf.exempt if we intend to protect it.
 def app_login_route():
@@ -1645,6 +1890,7 @@ def index():
     return render_template('mikrotik_userman_dashboard.html')
 
 @app.route('/api/initial-connect', methods=['POST'])
+@limiter.limit("10 per hour") # Limit initial connection attempts
 # No @login_required here, as it's for the Mikrotik connection setup,
 # but it should only be callable after app login.
 # The before_request_handler already protects it if user is not authenticated.
@@ -1707,10 +1953,13 @@ def initial_connect():
         return jsonify({'success': False, 'message': f'An unexpected error occurred: {e}.'}), 500
 
 
-@app.route('/api/test-connection', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/test-connection', methods=['POST'])
 @login_required
-def test_connection():
-    success, message = router_os_service.test_connection()
+# @limiter.limit("...") # Add specific limit if needed
+def test_router_connection(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    success, message = router_os_service.test_connection(router_id=router_id)
     return jsonify({'success': success, 'message': message})
 
 @app.route('/api/config', methods=['GET'])
@@ -1750,6 +1999,7 @@ def update_config_route():
 
 @app.route('/api/admin/change-password', methods=['POST'])
 @login_required
+@limiter.limit("5 per hour") # Stricter limit for password changes
 def change_admin_password():
     global app_config # Declare app_config as global at the beginning of the function
     data = request.json
@@ -1830,47 +2080,176 @@ def get_router_health_status_api():
         logger.error(f"API error in get_router_health_status_api: {e}", exc_info=True)
         return jsonify({'success': False, 'message': _('An unexpected server error occurred while fetching router health.')}), 500
 
+# --- Router Configuration CRUD API Endpoints ---
 
-@app.route('/api/dashboard-stats', methods=['GET'])
+@app.route('/api/routers', methods=['GET'])
 @login_required
-def get_dashboard_stats():
-    users = router_os_service.get_hotspot_users()
-    sessions = router_os_service.get_active_sessions()
+# @limiter.limit("...") # Consider adding specific limits if needed later
+def api_get_all_routers():
+    """API endpoint to get all configured router details (passwords excluded)."""
+    routers = config_loader.get_all_router_configs() # This method already excludes passwords
+    return jsonify({'success': True, 'routers': routers})
+
+@app.route('/api/routers', methods=['POST'])
+@login_required
+# @limiter.limit("...")
+def api_add_router():
+    """API endpoint to add a new router configuration."""
+    router_details = request.json
+    if not router_details:
+        return jsonify({'success': False, 'message': _('No router details provided.')}), 400
+
+    # Basic validation for required fields by the API layer
+    required_fields = ['displayName', 'host', 'port', 'username'] # password can be empty
+    missing_fields = [field for field in required_fields if field not in router_details or not router_details[field]]
+    if missing_fields:
+        return jsonify({'success': False, 'message': _('Missing required fields: {0}').format(', '.join(missing_fields))}), 400
+
+    try:
+        # Ensure port is an int if provided
+        if 'port' in router_details:
+            router_details['port'] = int(router_details['port'])
+    except ValueError:
+        return jsonify({'success': False, 'message': _('Invalid port number.')}), 400
+
+    new_router_id = config_loader.add_router_config(router_details)
+    if new_router_id:
+        # Return the newly added router config (excluding password)
+        new_config = config_loader.get_router_config_by_id(new_router_id)
+        if new_config and 'password' in new_config:
+            del new_config['password']
+        return jsonify({'success': True, 'message': _('Router configuration added successfully.'), 'router_id': new_router_id, 'router': new_config}), 201
+    else:
+        # config_loader.add_router_config logs specific errors
+        return jsonify({'success': False, 'message': _('Failed to add router configuration. Check logs for details. ID might be duplicate or data invalid.')}), 400
+
+@app.route('/api/routers/<path:router_id>', methods=['GET'])
+@login_required
+# @limiter.limit("...")
+def api_get_router_details(router_id: str):
+    """API endpoint to get details for a specific router (password excluded)."""
+    router_config = config_loader.get_router_config_by_id(router_id)
+    if router_config:
+        # Exclude password before sending to client, even if it's for an edit form
+        safe_config = {k: v for k, v in router_config.items() if k != 'password'}
+        return jsonify({'success': True, 'router': safe_config})
+    else:
+        return jsonify({'success': False, 'message': _('Router not found.')}), 404
+
+@app.route('/api/routers/<path:router_id>', methods=['PUT'])
+@login_required
+# @limiter.limit("...")
+def api_update_router(router_id: str):
+    """API endpoint to update an existing router configuration."""
+    updated_details = request.json
+    if not updated_details:
+        return jsonify({'success': False, 'message': _('No update details provided.')}), 400
+
+    # Prevent ID change via this endpoint explicitly
+    if 'id' in updated_details and updated_details['id'] != router_id:
+        return jsonify({'success': False, 'message': _('Router ID cannot be changed via update.')}), 400
+
+    # Ensure port is an int if provided
+    if 'port' in updated_details:
+        try:
+            updated_details['port'] = int(updated_details['port'])
+        except ValueError:
+            return jsonify({'success': False, 'message': _('Invalid port number.')}), 400
+
+    if config_loader.update_router_config(router_id, updated_details):
+        # Return the updated router config (excluding password)
+        new_config = config_loader.get_router_config_by_id(router_id)
+        if new_config and 'password' in new_config:
+            del new_config['password']
+        return jsonify({'success': True, 'message': _('Router configuration updated successfully.'), 'router': new_config})
+    else:
+        # Check if router was not found vs other update error (though update_router_config logs specifics)
+        if not config_loader.get_router_config_by_id(router_id):
+            return jsonify({'success': False, 'message': _('Router not found.')}), 404
+        return jsonify({'success': False, 'message': _('Failed to update router configuration.')}), 400
+
+@app.route('/api/routers/<path:router_id>', methods=['DELETE'])
+@login_required
+# @limiter.limit("...")
+def api_delete_router(router_id: str):
+    """API endpoint to delete a router configuration."""
+    if config_loader.delete_router_config(router_id):
+        # Also, if this was the "currently selected" router for the user session, clear it.
+        # This frontend logic would need to be handled on client side based on response.
+        # Or, we could have a server-side session variable for 'active_router_id'.
+        # For now, backend just deletes.
+        return jsonify({'success': True, 'message': _('Router configuration deleted successfully.')})
+    else:
+        return jsonify({'success': False, 'message': _('Router not found or failed to delete.')}), 404
+
+
+@app.route('/api/routers/<path:router_id>/dashboard-stats', methods=['GET'])
+@login_required
+# @limiter.limit("...")
+def get_dashboard_stats(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+
+    # Check if router_id is valid and we can get an API connection
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check: # get_mikrotik_api logs errors if config not found or connection fails
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    users = router_os_service.get_hotspot_users(router_id=router_id)
+    sessions = router_os_service.get_active_sessions(router_id=router_id)
+    # These service methods already return [] on error, so len() is safe.
     total_users = len(users)
     active_sessions = len(sessions)
-    return jsonify({'total_users': total_users, 'active_sessions': active_sessions})
+    return jsonify({'success': True, 'total_users': total_users, 'active_sessions': active_sessions})
 
-@app.route('/api/users', methods=['GET'])
+@app.route('/api/routers/<path:router_id>/users', methods=['GET'])
 @login_required
-def get_users():
-    users = router_os_service.get_hotspot_users()
-    # Also include profiles in this response for convenience, as they are often needed together
-    profiles = router_os_service.get_user_profiles()
-    return jsonify({'users': users, 'profiles': profiles})
+# @limiter.limit("...")
+def get_users(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
 
-@app.route('/api/users', methods=['POST'])
+    users = router_os_service.get_hotspot_users(router_id=router_id)
+    profiles = router_os_service.get_user_profiles(router_id=router_id)
+    return jsonify({'success': True, 'users': users, 'profiles': profiles})
+
+@app.route('/api/routers/<path:router_id>/users', methods=['POST'])
 @login_required
-def create_user():
+# @limiter.limit("...")
+def create_user(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id) # Check connection before proceeding
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     username = data.get('name')
     password = data.get('password')
     if not username or not password:
         return jsonify({'success': False, 'message': _('Username and password are required.')}), 400
     
-    # Validate 'limit-bytes-total' if present
     if 'limit-bytes-total' in data and data['limit-bytes-total'] is not None:
         try:
-            # Ensure it's an integer. The frontend sends it already multiplied (bytes).
             int(data['limit-bytes-total'])
         except (ValueError, TypeError):
             return jsonify({'success': False, 'message': _('Invalid Data Limit. Must be a whole number of bytes.')}), 400
 
-    success, message = router_os_service.create_hotspot_user(data)
-    return jsonify({'success': success, 'message': message}) # Assuming router_os_service returns translated messages or they are generic
+    success, message = router_os_service.create_hotspot_user(router_id=router_id, user_data=data)
+    return jsonify({'success': success, 'message': message})
 
-@app.route('/api/bulk-create-users', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/bulk-create-users', methods=['POST'])
 @login_required
-def bulk_create_users():
+def bulk_create_users(router_id: str):
+  if not router_id:
+    return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+  api_check = get_mikrotik_api(router_id=router_id) # Check connection before proceeding
+  if not api_check:
+    return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     number_of_users = data.get('number_of_users')
     profile = data.get('profile')
@@ -1928,7 +2307,7 @@ def bulk_create_users():
             user_data['comment'] = comment_for_batch
         # else, no comment is set for the user
 
-        success, msg = router_os_service.create_hotspot_user(user_data)
+        success, msg = router_os_service.create_hotspot_user(router_id=router_id, user_data=user_data)
         if success:
             created_credentials.append({
                 'username': username,
@@ -1946,9 +2325,15 @@ def bulk_create_users():
         'errors': errors
     })
 
-@app.route('/api/users/<username>', methods=['PUT'])
+@app.route('/api/routers/<path:router_id>/users/<username>', methods=['PUT'])
 @login_required
-def edit_user(username: str):
+def edit_user(router_id: str, username: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     if 'disabled' in data:
         data['disabled'] = 'true' if data['disabled'] else 'false'
@@ -1961,48 +2346,84 @@ def edit_user(username: str):
         except (ValueError, TypeError):
             return jsonify({'success': False, 'message': _('Invalid Data Limit. Must be a whole number of bytes.')}), 400
 
-    success, message = router_os_service.edit_hotspot_user(username, data)
+    success, message = router_os_service.edit_hotspot_user(router_id=router_id, username=username, new_data=data)
     return jsonify({'success': success, 'message': message})
 
-@app.route('/api/users/<username>', methods=['DELETE'])
+@app.route('/api/routers/<path:router_id>/users/<username>', methods=['DELETE'])
 @login_required
-def delete_user(username: str):
-    success, message = router_os_service.delete_hotspot_user(username)
+def delete_user(router_id: str, username: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    success, message = router_os_service.delete_hotspot_user(router_id=router_id, username=username)
     return jsonify({'success': success, 'message': message})
 
-@app.route('/api/active-sessions', methods=['GET'])
+@app.route('/api/routers/<path:router_id>/active-sessions', methods=['GET'])
 @login_required
-def get_active_sessions_route():
-    sessions = router_os_service.get_active_sessions()
+def get_active_sessions_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    sessions = router_os_service.get_active_sessions(router_id=router_id)
     return jsonify({'sessions': sessions})
 
-@app.route('/api/disconnect-user/<active_id>', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/disconnect-user/<active_id>', methods=['POST'])
 @login_required
-def disconnect_user_session(active_id: str):
-    success, message = router_os_service.disconnect_user(active_id)
+def disconnect_user_session(router_id: str, active_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    success, message = router_os_service.disconnect_user(router_id=router_id, active_id=active_id)
     return jsonify({'success': success, 'message': message})
 
-@app.route('/api/delete-expired-users', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/delete-expired-users', methods=['POST'])
 @login_required
-def delete_expired_users_route():
-    success, message, count = router_os_service.find_and_delete_expired_users()
+def delete_expired_users_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    success, message, count = router_os_service.find_and_delete_expired_users(router_id=router_id)
     return jsonify({'success': success, 'message': message, 'deleted_count': count})
 
-@app.route('/api/users/delete-by-profile/<profile_name>', methods=['DELETE'])
+@app.route('/api/routers/<path:router_id>/users/delete-by-profile/<profile_name>', methods=['DELETE'])
 @login_required
-def delete_users_by_profile_route(profile_name: str):
+def delete_users_by_profile_route(router_id: str, profile_name: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     try:
-        success, message, deleted_count = router_os_service.delete_users_by_profile(profile_name)
+        success, message, deleted_count = router_os_service.delete_users_by_profile(router_id=router_id, profile_name=profile_name)
         # Assuming message from service is already i18n or generic
         return jsonify({'success': success, 'message': message, 'deleted_count': deleted_count})
     except Exception as e:
-        logger.error(f"Error in delete_users_by_profile_route for profile '{profile_name}': {str(e)}")
+        logger.error(f"Error in delete_users_by_profile_route for router '{router_id}', profile '{profile_name}': {str(e)}")
         user_message = _("An unexpected error occurred while deleting users by profile.")
         return jsonify({'success': False, 'message': user_message, 'deleted_count': 0}), 500
 
-@app.route('/api/users/delete-by-active-status/<status>', methods=['DELETE'])
+@app.route('/api/routers/<path:router_id>/users/delete-by-active-status/<status>', methods=['DELETE'])
 @login_required
-def delete_users_by_active_status_route(status: str):
+def delete_users_by_active_status_route(router_id: str, status: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     is_disabled: bool
     if status.lower() == 'disabled':
         is_disabled = True
@@ -2015,53 +2436,83 @@ def delete_users_by_active_status_route(status: str):
             'deleted_count': 0
         }), 400
     try:
-        success, message, deleted_count = router_os_service.delete_users_by_active_status(is_disabled)
+        success, message, deleted_count = router_os_service.delete_users_by_active_status(router_id=router_id, is_disabled=is_disabled)
         return jsonify({'success': success, 'message': message, 'deleted_count': deleted_count})
     except Exception as e:
         status_desc = "disabled" if is_disabled else "active"
-        logger.error(f"Error in delete_users_by_active_status_route for {status_desc} users: {str(e)}")
+        logger.error(f"Error in delete_users_by_active_status_route for router '{router_id}', {status_desc} users: {str(e)}")
         user_message = _("An unexpected error occurred while deleting users by status.")
         return jsonify({'success': False, 'message': user_message, 'deleted_count': 0}), 500
 
-# --- Profile Management Routes ---
-@app.route('/api/profiles', methods=['GET'])
+# --- Profile Management Routes (per router) ---
+@app.route('/api/routers/<path:router_id>/profiles', methods=['GET'])
 @login_required
-def get_profiles_route():
-    profiles = router_os_service.get_user_profiles()
+def get_profiles_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    profiles = router_os_service.get_user_profiles(router_id=router_id)
     return jsonify({'profiles': profiles})
 
-@app.route('/api/profiles', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/profiles', methods=['POST'])
 @login_required
-def create_profile_route():
+def create_profile_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     if not data.get('name'):
         return jsonify({'success': False, 'message': _('Profile name is required.')}), 400
-    success, message = router_os_service.create_hotspot_profile(data)
+    success, message = router_os_service.create_hotspot_profile(router_id=router_id, profile_data=data)
     return jsonify({'success': success, 'message': message})
 
-@app.route('/api/profiles/<profile_id>', methods=['PUT'])
+@app.route('/api/routers/<path:router_id>/profiles/<profile_id_on_router>', methods=['PUT']) # profile_id is the .id from Mikrotik
 @login_required
-def edit_profile_route(profile_id: str):
+def edit_profile_route(router_id: str, profile_id_on_router: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     if not data:
         return jsonify({'success': False, 'message': _('No data provided for update.')}), 400
-    success, message = router_os_service.edit_hotspot_profile(profile_id, data)
+    success, message = router_os_service.edit_hotspot_profile(router_id=router_id, profile_id_on_router=profile_id_on_router, new_data=data)
     return jsonify({'success': success, 'message': message})
 
-@app.route('/api/profiles/<profile_id>', methods=['DELETE'])
+@app.route('/api/routers/<path:router_id>/profiles/<profile_id_on_router>', methods=['DELETE']) # profile_id is the .id from Mikrotik
 @login_required
-def delete_profile_route(profile_id: str):
-    success, message = router_os_service.delete_hotspot_profile(profile_id)
+def delete_profile_route(router_id: str, profile_id_on_router: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
+    success, message = router_os_service.delete_hotspot_profile(router_id=router_id, profile_id_on_router=profile_id_on_router)
     return jsonify({'success': success, 'message': message})
 
-# --- UNIFIED EXPORT ROUTE ---
-@app.route('/api/export-users', methods=['GET'])
+# --- UNIFIED EXPORT ROUTE (per router) ---
+@app.route('/api/routers/<path:router_id>/export-users', methods=['GET'])
 @login_required
-def export_users_route():
+def export_users_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     export_format = request.args.get('format', 'json').lower()
     profile_filter = request.args.get('profile_filter')
 
-    users = router_os_service.get_hotspot_users()
+    users = router_os_service.get_hotspot_users(router_id=router_id)
 
     if profile_filter:
         users = [user for user in users if user.get('profile') == profile_filter]
@@ -2090,7 +2541,7 @@ def export_users_route():
             cw.writerow(row)
         output = si.getvalue()
         filename_profile_part = profile_filter if profile_filter and profile_filter != 'All Profiles' else 'all'
-        return Response(output, mimetype="text/csv", headers={"Content-disposition": f"attachment; filename=users_{filename_profile_part}.csv"})
+        return Response(output, mimetype="text/csv", headers={"Content-disposition": f"attachment; filename=router_{router_id}_users_{filename_profile_part}.csv"})
 
     elif export_format == 'html_voucher' or export_format == 'pdf_voucher':
         vouchers_data = [
@@ -2101,7 +2552,10 @@ def export_users_route():
                 'profile': u.get('profile', '')
             } for u in users
         ]
-        login_url = app_config['mikrotik'].get('hotspot_login_url', '')
+        # Get hotspot_login_url for the specific router
+        current_router_config = config_loader.get_router_config_by_id(router_id)
+        login_url = current_router_config.get('hotspot_login_url', '') if current_router_config else ''
+
         filename_profile_part = profile_filter if profile_filter and profile_filter != 'All Profiles' else 'all'
 
         if export_format == 'pdf_voucher':
@@ -2114,10 +2568,10 @@ def export_users_route():
                 return Response(
                     pdf_file, 
                     mimetype="application/pdf", 
-                    headers={"Content-disposition": f"attachment; filename=vouchers_{filename_profile_part}.pdf"}
+                    headers={"Content-disposition": f"attachment; filename=router_{router_id}_vouchers_{filename_profile_part}.pdf"}
                 )
             except Exception as e:
-                 logger.error(f"Failed to generate PDF from export route: {e}")
+                 logger.error(f"Failed to generate PDF from export route for router '{router_id}': {e}")
                  return jsonify({"success": False, "message": _("An unexpected error occurred during PDF generation: {error}").format(error=str(e))}), 500
         else: # html_voucher
             html_content = _generate_vouchers_page_html(vouchers_data, login_url, include_print_button=True)
@@ -2125,18 +2579,26 @@ def export_users_route():
     else:
         return jsonify({"success": False, "message": _("Invalid export format.")}), 400
 
-@app.route('/api/analytics/basic_summary', methods=['GET'])
+@app.route('/api/routers/<path:router_id>/analytics/basic_summary', methods=['GET'])
 @login_required
-def get_basic_analytics_summary_route():
+def get_basic_analytics_summary_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     try:
-        logger.info("API: Fetching basic bandwidth analytics.")
-        analytics_data = router_os_service.get_basic_bandwidth_analytics()
+        logger.info(f"API: Fetching basic bandwidth analytics for router '{router_id}'.")
+        analytics_data = router_os_service.get_basic_bandwidth_analytics(router_id=router_id)
         return jsonify(analytics_data)
     except Exception as e:
-        logger.error(f"API: Error fetching basic analytics: {str(e)}")
+        logger.error(f"API: Error fetching basic analytics for router '{router_id}': {str(e)}")
         return jsonify({'success': False, 'message': _('A server error occurred while fetching analytics: {error}').format(error=str(e))}), 500
 
-# --- Historical Analytics API Endpoints ---
+# --- Historical Analytics API Endpoints (These remain global as DB is shared) ---
+# If historical data needs to be router-specific, the DB schema and queries would need router_id.
+# For now, assuming historical data is aggregated or not router-specific in DB.
 @app.route('/api/analytics/historical_usage', methods=['GET'])
 @login_required
 def get_historical_usage_route():
@@ -2188,15 +2650,21 @@ def get_user_activity_history_route(username):
         return jsonify({'success': False, 'message': _('A server error occurred while fetching user activity history.')}), 500
 
 # --- Bulk Action API Endpoints ---
-@app.route('/api/users/bulk-delete', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/users/bulk-delete', methods=['POST'])
 @login_required
-def bulk_delete_users_route():
+def bulk_delete_users_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     usernames = data.get('usernames', [])
     if not usernames:
         return jsonify({'success': False, 'message': _('No usernames provided for bulk deletion.')}), 400
 
-    success_count, fail_count, failed_usernames = router_os_service.bulk_delete_hotspot_users(usernames)
+    success_count, fail_count, failed_usernames = router_os_service.bulk_delete_hotspot_users(router_id=router_id, usernames=usernames)
     
     if fail_count == 0:
         message = _('Successfully deleted {count} users.').format(count=success_count)
@@ -2207,15 +2675,21 @@ def bulk_delete_users_route():
         )
         return jsonify({'success': False, 'message': message, 'success_count': success_count, 'fail_count': fail_count, 'failed_usernames': failed_usernames})
 
-@app.route('/api/users/bulk-disable', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/users/bulk-disable', methods=['POST'])
 @login_required
-def bulk_disable_users_route():
+def bulk_disable_users_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     usernames = data.get('usernames', [])
     if not usernames:
         return jsonify({'success': False, 'message': _('No usernames provided for bulk disable.')}), 400
 
-    success_count, fail_count, failed_usernames = router_os_service.bulk_set_user_disabled_status(usernames, disabled=True)
+    success_count, fail_count, failed_usernames = router_os_service.bulk_set_user_disabled_status(router_id=router_id, usernames=usernames, disabled=True)
     
     if fail_count == 0:
         message = _('Successfully disabled {count} users.').format(count=success_count)
@@ -2226,15 +2700,21 @@ def bulk_disable_users_route():
         )
         return jsonify({'success': False, 'message': message, 'success_count': success_count, 'fail_count': fail_count, 'failed_usernames': failed_usernames})
 
-@app.route('/api/users/bulk-enable', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/users/bulk-enable', methods=['POST'])
 @login_required
-def bulk_enable_users_route():
+def bulk_enable_users_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     usernames = data.get('usernames', [])
     if not usernames:
         return jsonify({'success': False, 'message': _('No usernames provided for bulk enable.')}), 400
 
-    success_count, fail_count, failed_usernames = router_os_service.bulk_set_user_disabled_status(usernames, disabled=False)
+    success_count, fail_count, failed_usernames = router_os_service.bulk_set_user_disabled_status(router_id=router_id, usernames=usernames, disabled=False)
 
     if fail_count == 0:
         message = _('Successfully enabled {count} users.').format(count=success_count)
@@ -2245,9 +2725,15 @@ def bulk_enable_users_route():
         )
         return jsonify({'success': False, 'message': message, 'success_count': success_count, 'fail_count': fail_count, 'failed_usernames': failed_usernames})
 
-@app.route('/api/users/bulk-change-profile', methods=['POST'])
+@app.route('/api/routers/<path:router_id>/users/bulk-change-profile', methods=['POST'])
 @login_required
-def bulk_change_profile_route():
+def bulk_change_profile_route(router_id: str):
+    if not router_id:
+        return jsonify({'success': False, 'message': _('Router ID is required.')}), 400
+    api_check = get_mikrotik_api(router_id=router_id)
+    if not api_check:
+        return jsonify({'success': False, 'message': _('Failed to connect to the specified router or router configuration not found.')}), 502
+
     data = request.json
     usernames = data.get('usernames', [])
     new_profile = data.get('profile')
@@ -2257,7 +2743,7 @@ def bulk_change_profile_route():
     if not new_profile:
         return jsonify({'success': False, 'message': _('No new profile provided for bulk profile change.')}), 400
 
-    success_count, fail_count, failed_usernames = router_os_service.bulk_change_user_profile(usernames, new_profile)
+    success_count, fail_count, failed_usernames = router_os_service.bulk_change_user_profile(router_id=router_id, usernames=usernames, new_profile=new_profile)
 
     if fail_count == 0:
         message = _('Successfully changed profile for {count} users to "{profile}".').format(count=success_count, profile=new_profile)
@@ -2353,14 +2839,14 @@ def get_translations():
         'Connection failed (Error {0}). Please check details and try again.': _('Connection failed (Error {0}). Please check details and try again.'),
 
         # New keys for delete features
-        'Delete Users by Profile': _('Delete Users by Profile'), # Title and button text
+        'Delete Users by Profile': _('Delete Users by Profile'),
         'Select Profile to Delete Users From:': _('Select Profile to Delete Users From:'),
-        'Delete Users by Active Status': _('Delete Users by Active Status'), # Title and button text
+        'Delete Users by Active Status': _('Delete Users by Active Status'),
         'Select User Status to Delete:': _('Select User Status to Delete:'),
-        'Active Users': _('Active Users'), # Option in select
-        'Disabled Users': _('Disabled Users'), # Option in select
-        '-- Select Profile --': _('-- Select Profile --'), # Default option for profile select
-        '-- Select Status --': _('-- Select Status --'), # Default option for status select
+        'Active Users': _('Active Users'),
+        'Disabled Users': _('Disabled Users'),
+        '-- Select Profile --': _('-- Select Profile --'),
+        '-- Select Status --': _('-- Select Status --'),
         
         # JavaScript alert/confirm messages
         'Please select a profile to delete users from.': _('Please select a profile to delete users from.'),
@@ -2396,6 +2882,18 @@ def get_translations():
         # Input Validation Messages
         'Invalid Data Limit. Must be a whole number of bytes.': _('Invalid Data Limit. Must be a whole number of bytes.'),
         'Invalid Data Limit for batch. Must be a whole number of bytes.': _('Invalid Data Limit for batch. Must be a whole number of bytes.'),
+        'No router details provided.': _('No router details provided.'),
+        'Missing required fields: {0}': _('Missing required fields: {0}'),
+        'Router configuration added successfully.': _('Router configuration added successfully.'),
+        'Failed to add router configuration. Check logs for details. ID might be duplicate or data invalid.': _('Failed to add router configuration. Check logs for details. ID might be duplicate or data invalid.'),
+        'Router not found.': _('Router not found.'),
+        'No update details provided.': _('No update details provided.'),
+        'Router ID cannot be changed via update.': _('Router ID cannot be changed via update.'),
+        'Router configuration updated successfully.': _('Router configuration updated successfully.'),
+        'Failed to update router configuration.': _('Failed to update router configuration.'),
+        'Router configuration deleted successfully.': _('Router configuration deleted successfully.'),
+        'Router not found or failed to delete.': _('Router not found or failed to delete.'),
+
 
         # Feature availability messages
         'PDF export is not available. Server may be missing dependencies.': _('PDF export is not available. Server may be missing dependencies.'),
@@ -2413,9 +2911,8 @@ def get_translations():
         'Error for interface': _('Error for interface'),
         'Failed to fetch traffic stats.': _('Failed to fetch traffic stats.'),
         'Network or server error while fetching traffic for': _('Network or server error while fetching traffic for'),
-        'Download Rate': _('Download Rate'), # For chart label
-        'Upload Rate': _('Upload Rate'),     # For chart label
-        # 'Loading...' is already present
+        'Download Rate': _('Download Rate'),
+        'Upload Rate': _('Upload Rate'),
 
         # Router Health Status API
         'Could not connect to Mikrotik router to fetch health status.': _('Could not connect to Mikrotik router to fetch health status.'),
@@ -2425,7 +2922,7 @@ def get_translations():
         'Partial data received. Error: {0}': _('Partial data received. Error: {0}'),
         'Failed to load router health status.': _('Failed to load router health status.'),
         'Network or server error while fetching router health.': _('Network or server error while fetching router health.'),
-        'Error': _('Error'), # Generic error text for display fields
+        'Error': _('Error'),
 
         # User Activity History UI (JavaScript)
         '-- Select User --': _('-- Select User --'),
@@ -2435,8 +2932,23 @@ def get_translations():
         'Loading user activity...': _('Loading user activity...'),
         'No activity found for this user in the selected period.': _('No activity found for this user in the selected period.'),
         'Failed to load user activity.': _('Failed to load user activity.'),
-        'Network or server error while fetching user activity.': _('Network or server error while fetching user activity.')
-        # Panel titles and labels like "Model:", "Version:" are currently hardcoded in HTML.
+        'Network or server error while fetching user activity.': _('Network or server error while fetching user activity.'),
+
+        # Router Config CRUD API specific messages
+        'No router details provided.': _('No router details provided.'),
+        'Missing required fields: {0}': _('Missing required fields: {0}'),
+        'Router configuration added successfully.': _('Router configuration added successfully.'),
+        'Failed to add router configuration. Check logs for details. ID might be duplicate or data invalid.': _('Failed to add router configuration. Check logs for details. ID might be duplicate or data invalid.'),
+        'Router not found.': _('Router not found.'),
+        'No update details provided.': _('No update details provided.'),
+        'Router ID cannot be changed via update.': _('Router ID cannot be changed via update.'),
+        'Router configuration updated successfully.': _('Router configuration updated successfully.'),
+        'Failed to update router configuration.': _('Failed to update router configuration.'),
+        'Router configuration deleted successfully.': _('Router configuration deleted successfully.'),
+        'Router not found or failed to delete.': _('Router not found or failed to delete.'),
+        'Router ID is required.': _('Router ID is required.'),
+        'Failed to connect to the specified router or router configuration not found.': _('Failed to connect to the specified router or router configuration not found.'),
+        'Interface not found on specified router or error fetching stats.': _('Interface not found on specified router or error fetching stats.')
     }
     return jsonify(translations)
 
@@ -2452,136 +2964,148 @@ if __name__ == '__main__':
         logger.info("Database tables created (if they didn't exist).")
 
     # --- Scheduler Setup ---
-    def log_router_data_job():
-        """Scheduled job to log data from the Mikrotik router."""
+    def log_router_data_job_for_all_routers():
+        """Scheduled job to log data from ALL configured Mikrotik routers."""
         with app.app_context(): # Ensure app context for db and config access
-            logger.info("Scheduler: Running log_router_data_job...")
-            try:
-                # Check if Mikrotik API is available (similar to how it's done in routes)
-                # This requires a request context for 'g', so we use a direct service call pattern
-                # or ensure the service method itself can acquire the API if not in 'g'.
-                # For simplicity, let's assume router_os_service methods can be called.
-                # If they rely on 'g', this job would need to simulate parts of a request context
-                # or the service methods need refactoring.
-                # Assuming router_os_service.get_hotspot_users() and get_active_sessions()
-                # can establish their own connection if needed, or we pass the app explicitly.
+            logger.info("Scheduler: Running log_router_data_job_for_all_routers...")
 
-                # Re-instantiate RouterOSService or ensure it can work outside request context
-                # For this job, it's better if RouterOSService can be instantiated and used directly.
-                # Let's assume its methods like get_hotspot_users correctly use get_mikrotik_api(),
-                # which in turn might need app context if 'g' is not available.
-                # Since we are in app_context(), get_mikrotik_api() *should* work.
+            current_config = config_loader.get_config()
+            router_configs = current_config.get('mikrotik_routers', [])
+
+            if not router_configs:
+                logger.info("Scheduler: No routers configured. Skipping data logging job.")
+                return
+
+            for router_cfg in router_configs:
+                router_id = router_cfg.get('id')
+                if not router_id:
+                    logger.warning(f"Scheduler: Skipping a router config due to missing 'id': {router_cfg.get('displayName', 'N/A')}")
+                    continue
+
+                logger.info(f"Scheduler: Processing router ID '{router_id}' ({router_cfg.get('displayName', 'N/A')}).")
                 
-                # Ensure Mikrotik API is available (mimicking get_mikrotik_api without 'g')
-                current_config = config_loader.get_config()
-                mikrotik_cfg = current_config['mikrotik']
                 temp_api = None
-                connection_attempts = 3
-                attempt_delay_seconds = 10
+                connection_attempts = 3 # Per router
+                attempt_delay_seconds = 5 # Per router
 
                 for attempt in range(connection_attempts):
                     try:
-                        logger.info(f"Scheduler: Attempting to connect to Mikrotik (Attempt {attempt + 1}/{connection_attempts})...")
+                        logger.info(f"Scheduler: Attempting to connect to Mikrotik '{router_id}' (Attempt {attempt + 1}/{connection_attempts})...")
+                        # Use get_mikrotik_api which handles connection details from config
+                        # However, get_mikrotik_api relies on 'g' which is request-specific.
+                        # For background jobs, we need to connect directly.
                         temp_api = librouteros.connect(
-                            host=mikrotik_cfg['host'],
-                            username=mikrotik_cfg['username'],
-                            password=mikrotik_cfg['password'],
-                            port=mikrotik_cfg['port'],
-                            ssl=mikrotik_cfg.get('use_ssl', False),
-                            timeout=10 # Add a connection timeout
+                            host=router_cfg['host'],
+                            username=router_cfg['username'],
+                            password=router_cfg.get('password', ''), # Ensure password key exists
+                            port=int(router_cfg['port']),
+                            ssl=router_cfg.get('use_ssl', False),
+                            timeout=10
                         )
-                        logger.info("Scheduler: Successfully connected to Mikrotik for data logging.")
-                        break # Exit loop on successful connection
+                        logger.info(f"Scheduler: Successfully connected to Mikrotik '{router_id}' for data logging.")
+                        break
                     except (librouteros.exceptions.LibRouterosError, socket.error, ConnectionRefusedError, OSError) as api_conn_e:
-                        logger.warning(f"Scheduler: Connection attempt {attempt + 1} failed: {api_conn_e}")
+                        logger.warning(f"Scheduler: Connection attempt {attempt + 1} for router '{router_id}' failed: {api_conn_e}")
                         if attempt < connection_attempts - 1:
-                            logger.info(f"Scheduler: Retrying in {attempt_delay_seconds} seconds...")
-                            import time # Import time module for sleep
+                            logger.info(f"Scheduler: Retrying router '{router_id}' in {attempt_delay_seconds} seconds...")
+                            import time
                             time.sleep(attempt_delay_seconds)
                         else:
-                            logger.error("Scheduler: All connection attempts failed. Cannot log router data.")
-                            return # Exit job if all connection attempts fail
-                    except Exception as e: # Catch any other unexpected error during connect
-                        logger.error(f"Scheduler: Unexpected error during Mikrotik connection attempt {attempt + 1}: {e}", exc_info=True)
+                            logger.error(f"Scheduler: All connection attempts failed for router '{router_id}'. Cannot log data for this router.")
+                            temp_api = None # Ensure temp_api is None if all attempts fail
+                            # Continue to the next router in the list
+                    except Exception as e:
+                        logger.error(f"Scheduler: Unexpected error during Mikrotik connection attempt {attempt + 1} for router '{router_id}': {e}", exc_info=True)
                         if attempt < connection_attempts - 1:
-                             logger.info(f"Scheduler: Retrying in {attempt_delay_seconds} seconds...")
+                             logger.info(f"Scheduler: Retrying router '{router_id}' in {attempt_delay_seconds} seconds...")
                              import time
                              time.sleep(attempt_delay_seconds)
                         else:
-                            logger.error("Scheduler: All connection attempts failed due to unexpected error. Cannot log router data.")
-                            return
+                            logger.error(f"Scheduler: All connection attempts for router '{router_id}' failed due to unexpected error. Cannot log data for this router.")
+                            temp_api = None
 
-                if not temp_api: # Should be redundant if return is hit above, but as a safeguard
-                    logger.error("Scheduler: Mikrotik API not available after retry attempts.")
-                    return
+                if not temp_api:
+                    logger.error(f"Scheduler: Mikrotik API not available for router '{router_id}' after retry attempts. Skipping this router.")
+                    continue # Move to the next router
 
-                # --- Fetch Data using the temporary API connection ---
+                # --- Fetch Data using the temporary API connection for the current router ---
                 try:
+                    # Note: The DB schema (UserActivityLog, SystemSnapshot) does NOT have router_id.
+                    # This means data from all routers will be aggregated into the same tables.
+                    # If router-specific historical data is needed, the schema MUST be updated.
+                    # For now, we log it as if it's from a single (or undifferentiated) source.
+                    # This is a significant point if multi-router historical analytics become a feature.
+
                     users_raw = list(temp_api.path('ip', 'hotspot', 'user').select(
                         '.id', 'name', 'profile', 'uptime', 'bytes-in', 'bytes-out'
                     ))
                     active_sessions_raw = list(temp_api.path('ip', 'hotspot', 'active').select('.id'))
+
+                    current_time = datetime.utcnow()
+                    # These totals are per-router, but will be inserted into a global table.
+                    total_bytes_in_snapshot_for_router = 0
+                    total_bytes_out_snapshot_for_router = 0
+
+                    for user_data_raw in users_raw:
+                        try:
+                            uptime_str = user_data_raw.get('uptime', '0s')
+                            # Assuming router_os_service is instantiated globally or accessible
+                            uptime_sec = router_os_service._parse_ros_time(uptime_str)
+
+                            bytes_in_val = int(user_data_raw.get('bytes-in', 0) or 0)
+                            bytes_out_val = int(user_data_raw.get('bytes-out', 0) or 0)
+
+                            # TODO: Add router_id to UserActivityLog if schema is updated
+                            log_entry = UserActivityLog(
+                                timestamp=current_time,
+                                username=user_data_raw.get('name'),
+                                profile=user_data_raw.get('profile'),
+                                bytes_in=bytes_in_val,
+                                bytes_out=bytes_out_val,
+                                uptime_seconds=uptime_sec
+                                # router_id=router_id # If schema changes
+                            )
+                            db.session.add(log_entry)
+
+                            total_bytes_in_snapshot_for_router += bytes_in_val
+                            total_bytes_out_snapshot_for_router += bytes_out_val
+                        except Exception as e_user:
+                            logger.error(f"Scheduler: Error processing user {user_data_raw.get('name', 'N/A')} on router '{router_id}' for logging: {e_user}")
+
+                    # TODO: Add router_id to SystemSnapshot if schema is updated
+                    snapshot_entry = SystemSnapshot(
+                        timestamp=current_time,
+                        active_users_count=len(active_sessions_raw),
+                        total_data_bytes_in=total_bytes_in_snapshot_for_router,
+                        total_data_bytes_out=total_bytes_out_snapshot_for_router
+                        # router_id=router_id # If schema changes
+                    )
+                    db.session.add(snapshot_entry)
+
+                    db.session.commit() # Commit per router to isolate failures
+                    logger.info(f"Scheduler: Successfully logged data for {len(users_raw)} users and system snapshot from router '{router_id}'.")
+
                 except Exception as fetch_e:
-                    logger.error(f"Scheduler: Error fetching data from Mikrotik: {fetch_e}")
-                    if temp_api: temp_api.close()
-                    return
+                    logger.error(f"Scheduler: Error fetching or processing data from Mikrotik '{router_id}': {fetch_e}", exc_info=True)
+                    db.session.rollback() # Rollback for this router's data if commit hasn't happened
                 finally:
-                    if temp_api: temp_api.close()
+                    if temp_api:
+                        try: temp_api.close()
+                        except: pass # Ignore close errors
 
-
-                current_time = datetime.utcnow()
-                total_bytes_in_snapshot = 0
-                total_bytes_out_snapshot = 0
-
-                for user_data_raw in users_raw:
-                    try:
-                        uptime_str = user_data_raw.get('uptime', '0s')
-                        uptime_sec = router_os_service._parse_ros_time(uptime_str) # Use existing parser
-
-                        bytes_in_val = int(user_data_raw.get('bytes-in', 0) or 0)
-                        bytes_out_val = int(user_data_raw.get('bytes-out', 0) or 0)
-                        
-                        log_entry = UserActivityLog(
-                            timestamp=current_time,
-                            username=user_data_raw.get('name'),
-                            profile=user_data_raw.get('profile'),
-                            bytes_in=bytes_in_val,
-                            bytes_out=bytes_out_val,
-                            uptime_seconds=uptime_sec
-                        )
-                        db.session.add(log_entry)
-                        
-                        total_bytes_in_snapshot += bytes_in_val
-                        total_bytes_out_snapshot += bytes_out_val
-                    except Exception as e_user:
-                        logger.error(f"Scheduler: Error processing user {user_data_raw.get('name', 'N/A')} for logging: {e_user}")
-
-                snapshot_entry = SystemSnapshot(
-                    timestamp=current_time,
-                    active_users_count=len(active_sessions_raw),
-                    total_data_bytes_in=total_bytes_in_snapshot,
-                    total_data_bytes_out=total_bytes_out_snapshot
-                )
-                db.session.add(snapshot_entry)
-
-                db.session.commit()
-                logger.info(f"Scheduler: Successfully logged data for {len(users_raw)} users and system snapshot.")
-
-            except Exception as e:
-                logger.error(f"Scheduler: Unhandled exception in log_router_data_job: {e}", exc_info=True)
-                db.session.rollback()
-
+            logger.info("Scheduler: Finished processing all configured routers.")
 
     scheduler_config = app_config.get('scheduler', {})
     if scheduler_config.get('enabled', False) and (os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug):
         scheduler = BackgroundScheduler(daemon=True)
         job_interval_minutes = scheduler_config.get('job_interval_minutes', 60)
-        scheduler.add_job(log_router_data_job, 'interval', minutes=job_interval_minutes)
+        # Use the new multi-router job function
+        scheduler.add_job(log_router_data_job_for_all_routers, 'interval', minutes=job_interval_minutes)
         scheduler.start()
-        logger.info(f"Scheduler started. Logging data every {job_interval_minutes} minutes.")
+        logger.info(f"Scheduler started. Logging data for all configured routers every {job_interval_minutes} minutes.")
     elif not scheduler_config.get('enabled', False):
         logger.info("Scheduler is disabled in configuration.")
-    else:
+    else: # Debug mode and not main Werkzeug process
         logger.info("Scheduler not started (app in debug/reloader mode or WERKZEUG_RUN_MAIN not true).")
 
     app.run(host=server_config['host'], port=server_config['port'], debug=server_config['debug'])

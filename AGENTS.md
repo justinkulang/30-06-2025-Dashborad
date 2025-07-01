@@ -25,15 +25,27 @@ This is a Flask-based web application for managing Mikrotik Hotspot users. Key c
     - After adding new keys, run `pybabel extract`, `pybabel update`, and `pybabel compile` as described in `README.md` to update translation files.
 - **Configuration:**
     - Sensitive information like passwords should be handled carefully. The application admin password is now changeable via the UI.
-    - `config.json` is read on startup. Some parts (like Mikrotik connection details) can be updated live via the UI and are reloaded by `ConfigLoader`.
-    - **Environment Variables:** Most settings in `config.json` can be overridden by environment variables (e.g., `APP_MIKROTIK_HOST`, `APP_SERVER_PORT`). Refer to `README.md` for a full list and precedence. This is the preferred method for configuring deployments, especially in Docker.
-- **Database Migrations:** The application uses `Flask-Migrate` for managing database schema changes. When models in `app.py` are updated, a new migration script needs to be generated (`flask db migrate`) and then applied (`flask db upgrade`). Refer to `README.md` for detailed commands.
+    - `config.json` now uses a `mikrotik_routers` list for multi-router support. `ConfigLoader` handles this new structure, including migration from the old single `mikrotik` object.
+    - Router configurations (add, edit, delete) are managed via API endpoints (`/api/routers/...`) and UI in Settings.
+    - **Environment Variables:** Primary Mikrotik env vars (`APP_MIKROTIK_HOST`, etc.) now apply to the first router in the list or initialize one. Refer to `README.md`.
+- **Database Migrations:** The application uses `Flask-Migrate`. Historical data in `UserActivityLog` and `SystemSnapshot` is currently aggregated from all routers (schema does not yet include `router_id`).
+- **Rate Limiting:** API rate limiting is implemented using `Flask-Limiter`.
+- **Error Tracking:** Sentry SDK is integrated.
 
 ## Working with the Frontend (`mikrotik_userman_dashboard.html`)
 
 - The dashboard is heavily JavaScript-driven.
+- **Multi-Router UI:**
+    - A router selector dropdown (`#routerSelector`) is available in the Settings tab.
+    - `currentRouterId` global JS variable stores the active router's ID.
+    - `allConfiguredRouters` global JS variable stores the list of routers.
+    - `handleRouterSelectionChange()` manages loading data for the selected router.
+    - The router configuration form in Settings is now used for both adding new and editing existing routers.
+- **API Calls:**
+    - The `apiCall(endpoint, options, isGlobalApi = false)` JS function now automatically prepends `/api/routers/${currentRouterId}` to relevant (non-global) endpoints.
+    - Endpoints that are truly global (e.g., `/api/translations`, `/api/admin/change-password`) or already router-scoped (e.g., `/api/routers/...` for CRUD) should be called with `isGlobalApi = true` or ensure their path starts with `/routers/`.
 - UI updates are typically done by directly manipulating the DOM or re-rendering table/list sections.
-- Pay attention to existing helper functions in JavaScript (e.g., `formatBytes`, `showAlert`, `openModal`, `closeModal`).
+- Pay attention to existing helper functions in JavaScript.
 - When adding new UI elements that require translation, ensure keys are added to `get_translations` in `app.py` and used via `getTranslation()` in JS.
 
 ## Security Considerations
