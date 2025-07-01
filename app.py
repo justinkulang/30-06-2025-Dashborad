@@ -9,6 +9,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import timedelta, datetime
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func, cast, Date, extract
+from flask_migrate import Migrate # Import Flask-Migrate
 import librouteros
 from librouteros.exceptions import TrapError
 import socket
@@ -123,7 +124,14 @@ class ConfigLoader:
         self.config = self._load_config()
 
     def _load_config(self):
-        """Load configuration from config.json or create default if not exists."""
+        """Load configuration from config.json or create default, then override with environment variables if set."""
+
+        # Helper for boolean conversion from env var string
+        def get_env_bool(env_var_value, default_if_not_set):
+            if env_var_value is None: # Env var not set
+                return default_if_not_set
+            return env_var_value.lower() in ['true', '1', 't', 'yes', 'y']
+
         default_config = {
             "scheduler": {
                 "enabled": True,
@@ -169,7 +177,61 @@ class ConfigLoader:
             # If config file doesn't exist, write the full default_config
             with open(self.config_file, 'w') as f:
                 json.dump(default_config, f, indent=4)
-            return default_config
+            config_to_use = default_config
+
+        # Define environment variable mappings
+        # Format: (env_var_name, [config_path_keys], type_converter_func or None for string)
+        env_var_map = [
+            ('APP_MIKROTIK_HOST', ['mikrotik', 'host'], None),
+            ('APP_MIKROTIK_PORT', ['mikrotik', 'port'], int),
+            ('APP_MIKROTIK_USERNAME', ['mikrotik', 'username'], None),
+            ('APP_MIKROTIK_PASSWORD', ['mikrotik', 'password'], None),
+            ('APP_MIKROTIK_USE_SSL', ['mikrotik', 'use_ssl'], lambda v: get_env_bool(v, config_to_use['mikrotik']['use_ssl'])),
+            ('APP_MIKROTIK_HOTSPOT_LOGIN_URL', ['mikrotik', 'hotspot_login_url'], None),
+
+            ('APP_SERVER_HOST', ['server', 'host'], None),
+            ('APP_SERVER_PORT', ['server', 'port'], int),
+            ('APP_SERVER_DEBUG', ['server', 'debug'], lambda v: get_env_bool(v, config_to_use['server']['debug'])),
+            ('APP_SERVER_LOG_FILE', ['server', 'log_file'], None),
+            ('APP_SERVER_LOG_LEVEL_CONSOLE', ['server', 'log_level_console'], None),
+            ('APP_SERVER_LOG_LEVEL_FILE', ['server', 'log_level_file'], None),
+
+            ('APP_DATABASE_URI', ['database', 'uri'], None),
+
+            ('APP_SCHEDULER_ENABLED', ['scheduler', 'enabled'], lambda v: get_env_bool(v, config_to_use['scheduler']['enabled'])),
+            ('APP_SCHEDULER_JOB_INTERVAL_MINUTES', ['scheduler', 'job_interval_minutes'], int),
+
+            ('APP_ADMIN_USERNAME', ['app_admin', 'username'], None),
+            # APP_ADMIN_PASSWORD_HASH is intentionally not here - managed by password change feature or initial setup.
+        ]
+
+        for env_var, path_keys, converter in env_var_map:
+            env_value = os.environ.get(env_var)
+            if env_value is not None:
+                current_value_container = config_to_use
+                for key_part_index, key_part in enumerate(path_keys[:-1]):
+                    current_value_container = current_value_container.setdefault(key_part, {})
+
+                final_key = path_keys[-1]
+                original_value = current_value_container.get(final_key)
+
+                try:
+                    if converter is int:
+                        converted_value = int(env_value)
+                    elif callable(converter) and converter.__name__ == '<lambda>': # For get_env_bool via lambda
+                        converted_value = converter(env_value)
+                    elif converter is None: # string
+                        converted_value = env_value
+                    else: # Should not happen with current map
+                        converted_value = env_value
+
+                    current_value_container[final_key] = converted_value
+                    # Use a temporary logger instance or print for setup phase logging if main logger not ready
+                    print(f"[ConfigLoader] Configuration: '{'.'.join(path_keys)}' overridden by environment variable '{env_var}'. New value: '{converted_value}' (was: '{original_value}')")
+                except ValueError as e:
+                    print(f"[ConfigLoader] WARNING: Could not convert environment variable '{env_var}' (value: '{env_value}') to required type for '{'.'.join(path_keys)}'. Error: {e}. Using previous value: '{original_value}'.")
+
+        return config_to_use
 
     def get_config(self):
         return self.config
@@ -249,6 +311,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = app_config.get('database', {}).get('uri'
 logger.info(f"SQLAlchemy Database URI set to: {app.config['SQLALCHEMY_DATABASE_URI']}")
 
 db.init_app(app)
+migrate = Migrate(app, db) # Initialize Flask-Migrate
 
 # --- Setup Logging Handlers (after app_config is available) ---
 def setup_logging(app_config_instance):

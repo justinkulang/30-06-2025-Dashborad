@@ -26,6 +26,8 @@ This is a Flask-based web application for managing Mikrotik Hotspot users. Key c
 - **Configuration:**
     - Sensitive information like passwords should be handled carefully. The application admin password is now changeable via the UI.
     - `config.json` is read on startup. Some parts (like Mikrotik connection details) can be updated live via the UI and are reloaded by `ConfigLoader`.
+    - **Environment Variables:** Most settings in `config.json` can be overridden by environment variables (e.g., `APP_MIKROTIK_HOST`, `APP_SERVER_PORT`). Refer to `README.md` for a full list and precedence. This is the preferred method for configuring deployments, especially in Docker.
+- **Database Migrations:** The application uses `Flask-Migrate` for managing database schema changes. When models in `app.py` are updated, a new migration script needs to be generated (`flask db migrate`) and then applied (`flask db upgrade`). Refer to `README.md` for detailed commands.
 
 ## Working with the Frontend (`mikrotik_userman_dashboard.html`)
 

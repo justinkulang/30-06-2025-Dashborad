@@ -48,10 +48,11 @@ This project provides a web-based dashboard for managing Mikrotik Hotspot users,
     ```bash
     pip install -r requirements.txt
     ```
-    The `requirements.txt` file includes all necessary dependencies, including `Flask-SQLAlchemy` for database operations and `APScheduler` for background data logging. Pinned versions are used for stable builds. You can update these or generate your own environment's specific versions using `pip freeze > requirements.txt` after testing.
+    The `requirements.txt` file includes all necessary dependencies, including `Flask-SQLAlchemy` for database operations, `Flask-Migrate` for database schema migrations, and `APScheduler` for background data logging. Pinned versions are used for stable builds. You can update these or generate your own environment's specific versions using `pip freeze > requirements.txt` after testing.
 
 4.  **Initial Configuration (`config.json`):**
     *   Upon first run, or if `config.json` is missing, a default configuration file will be created. This file includes settings for the Mikrotik connection, web server, admin user, database, and data logging scheduler.
+    *   **Database Setup:** After initial setup and before running the application for the first time in a new environment, or when upgrading, database migrations should be handled (see "Database Migrations" section under "Production Deployment"). For a brand new setup, `db.create_all()` (run when `app.py` is executed directly) will create tables, but migrations should be initialized and applied thereafter.
     *   **Web Application Admin:**
         *   A default admin user for the web dashboard is created with credentials:
             *   Username: `admin`
@@ -106,6 +107,85 @@ For production, it is highly recommended to use a production-grade WSGI server l
 ## Production Deployment
 
 When deploying this application to a production environment, several considerations should be taken into account for security, reliability, and performance.
+
+### Configuration Precedence
+The application configuration is loaded in the following order of precedence (later sources override earlier ones):
+1.  Default values hardcoded in `app.py`.
+2.  Values from `config.json` file (if it exists).
+3.  Values from Environment Variables (if set).
+
+### Environment Variable Overrides
+Many critical configuration settings can be overridden using environment variables. This is particularly useful for Docker deployments and for managing sensitive data outside of the `config.json` file. Boolean values are generally interpreted from strings like "true", "1", "yes" (case-insensitive) or "false", "0", "no".
+
+**Available Environment Variables:**
+
+*   **Mikrotik Connection:**
+    *   `APP_MIKROTIK_HOST`: Mikrotik router IP address or hostname.
+    *   `APP_MIKROTIK_PORT`: API port (integer).
+    *   `APP_MIKROTIK_USERNAME`: API username.
+    *   `APP_MIKROTIK_PASSWORD`: API password.
+    *   `APP_MIKROTIK_USE_SSL`: Set to `true` or `false` to enable/disable SSL for API connection.
+    *   `APP_MIKROTIK_HOTSPOT_LOGIN_URL`: URL for hotspot login page (used for QR codes).
+*   **Server Settings:**
+    *   `APP_SERVER_HOST`: Host address for the web server to bind to (e.g., `0.0.0.0`).
+    *   `APP_SERVER_PORT`: Port for the web server (integer).
+    *   `APP_SERVER_DEBUG`: Set to `true` or `false` to enable/disable Flask debug mode.
+    *   `APP_SERVER_LOG_FILE`: Path to the application log file.
+    *   `APP_SERVER_LOG_LEVEL_CONSOLE`: Log level for console output (e.g., `INFO`, `DEBUG`, `WARNING`).
+    *   `APP_SERVER_LOG_LEVEL_FILE`: Log level for file output.
+*   **Database:**
+    *   `APP_DATABASE_URI`: SQLAlchemy database URI (e.g., `sqlite:///./db_data/hotspot_analytics.db`).
+*   **Scheduler:**
+    *   `APP_SCHEDULER_ENABLED`: Set to `true` or `false` to enable/disable the background data logging scheduler.
+    *   `APP_SCHEDULER_JOB_INTERVAL_MINUTES`: Interval for scheduler job in minutes (integer).
+*   **Application Admin:**
+    *   `APP_ADMIN_USERNAME`: Username for the web application admin. (Password is managed via UI or `config.json` hash).
+*   **Flask Specific:**
+    *   `FLASK_SECRET_KEY`: (Covered below) Crucial for session security.
+*   **Logging Control (Docker):**
+    *   `DISABLE_FILE_LOGGING`: Set to `true` to disable Flask's file logging (recommended for Docker where logs go to stdout/stderr).
+
+### Database Migrations
+This application uses `Flask-Migrate` (which wraps Alembic) to manage database schema changes for the `hotspot_analytics.db`.
+
+**Workflow:**
+
+1.  **Initialization (One-time per project environment):**
+    If you are setting up migrations for the first time in your development environment:
+    ```bash
+    # Ensure your virtual environment is activated
+    # export FLASK_APP=app.py  (For Linux/macOS)
+    # $env:FLASK_APP = "app.py" (For PowerShell)
+    # set FLASK_APP=app.py     (For Windows CMD)
+    flask db init
+    ```
+    This creates a `migrations` directory. Commit this directory to your version control.
+
+2.  **Creating a New Migration:**
+    After making changes to your SQLAlchemy models in `app.py` (e.g., adding a new table or column):
+    ```bash
+    flask db migrate -m "Brief description of model changes"
+    ```
+    This will auto-generate a new migration script in the `migrations/versions/` directory. Review this script to ensure it correctly reflects your changes.
+
+3.  **Applying Migrations:**
+    To apply pending migrations to your database (this actually changes the database schema):
+    ```bash
+    flask db upgrade
+    ```
+    This command should be run during deployment when updating the application to a new version with schema changes. For a new database, `flask db upgrade` will apply all migrations, bringing the schema to the latest version.
+
+4.  **Downgrading (if necessary):**
+    To revert a migration:
+    ```bash
+    flask db downgrade
+    ```
+
+**Important Notes:**
+*   Always run these commands with your application's virtual environment activated.
+*   The `FLASK_APP` environment variable must be set to point to your main application file (e.g., `app.py` or `wsgi.py`).
+*   When deploying, `flask db upgrade` should typically be run *before* starting the new version of the application server.
+*   The `hotspot_analytics.db` file (if using SQLite) should be writable by the user running the Flask commands and the application.
 
 ### `SECRET_KEY` Configuration
 For session security, Flask uses a `SECRET_KEY`.
