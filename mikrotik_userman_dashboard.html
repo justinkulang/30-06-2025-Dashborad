@@ -378,11 +378,14 @@
         .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.875rem; } 
         
         .table-container { 
+            display: block;
             overflow-x: auto; 
+            overflow-y: auto;
+            max-height: 400px; /* Fixed height for testing */
             border: 1px solid var(--theme-border-panel); 
             border-radius: var(--border-radius); 
             background-color: var(--theme-bg-panel); 
-            transition: background-color 0.3s ease, border-color 0.3s ease;
+            /* transition: background-color 0.3s ease, border-color 0.3s ease; */ /* Temporarily removed */
         }
         table { width: 100%; border-collapse: collapse; font-size: 0.9rem; } 
         th, td { padding: 0.9rem 1rem; text-align: left; border-bottom: 1px solid var(--theme-border-table); vertical-align: middle; } 
